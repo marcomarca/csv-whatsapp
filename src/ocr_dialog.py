@@ -22,11 +22,14 @@ class CaptureKeyDialog(tk.Toplevel):
         parent: tk.Tk,
         ocr_manager: OCRManager | None = None,
         account_id: str = "principal",
+        device_serial: str = "",
         on_key_saved: Callable[[str], None] | None = None,
     ):
         super().__init__(parent)
         self.account_id = account_id
-        self.title(f"Captura OCR de Clave (64 dígitos) - Cuenta: {self.account_id}")
+        self.device_serial = device_serial
+        title_suffix = f" [{device_serial}]" if device_serial else ""
+        self.title(f"Captura OCR de Clave (64 dígitos) - Cuenta: {self.account_id}{title_suffix}")
         self.geometry("860x720")
         self.minsize(740, 600)
         self.transient(parent)
@@ -303,7 +306,9 @@ class CaptureKeyDialog(tk.Toplevel):
             return
 
         try:
-            self.secret_manager.store_key(self.detected_key_clean, self.account_id)
+            self.secret_manager.store_key(
+                self.detected_key_clean, self.account_id, serial=self.device_serial
+            )
             messagebox.showinfo(
                 "Clave Guardada",
                 f"La clave se ha validado y almacenado de forma segura en el almacén de credenciales para la cuenta '{self.account_id}'.",

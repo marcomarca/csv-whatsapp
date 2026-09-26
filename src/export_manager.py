@@ -153,10 +153,16 @@ class ExportManager:
 
     @classmethod
     def get_account_export_dir(
-        cls, account_id: str = "principal", base_dir: Path | None = None
+        cls,
+        account_id: str = "principal",
+        base_dir: Path | None = None,
+        device_serial: str | None = None,
     ) -> Path:
-        """Resolve isolated export directory for a specific account."""
+        """Resolve isolated export directory for a specific account and device."""
         root = base_dir or AppConfig.EXPORTS_DIR
+        if device_serial:
+            clean_serial = re.sub(r'[\\/*?:"<>|]', "_", device_serial).strip()
+            return root / clean_serial / account_id
         return root / account_id
 
     @classmethod
@@ -167,9 +173,12 @@ class ExportManager:
         manifest: ExportManifest,
         output_dir: Path | None = None,
         account_id: str = "principal",
+        device_serial: str = "",
     ) -> list[Path]:
         """Export all_messages.csv, conversations.csv, individual conversation CSVs, and manifest.json."""
-        out_dir = output_dir or cls.get_account_export_dir(account_id)
+        out_dir = output_dir or cls.get_account_export_dir(
+            account_id=account_id, device_serial=device_serial
+        )
         conv_dir = out_dir / "conversations"
         out_dir.mkdir(parents=True, exist_ok=True)
         conv_dir.mkdir(parents=True, exist_ok=True)
@@ -209,6 +218,7 @@ class ExportManager:
         manifest.total_conversations = len(conversations)
         manifest.total_messages = len(messages)
         manifest.account_id = account_id
+        manifest.device_serial = device_serial
 
         try:
             with open(temp_manifest, "w", encoding="utf-8") as f:
@@ -223,6 +233,6 @@ class ExportManager:
             raise ExportFailedError(reason=f"Fallo al escribir el archivo manifest.json: {e}")
 
         logger.info(
-            f"Export completed for account '{account_id}': {len(files_written)} files written to {out_dir}."
+            f"Export completed for account '{account_id}' (device: '{device_serial}'): {len(files_written)} files written to {out_dir}."
         )
         return files_written

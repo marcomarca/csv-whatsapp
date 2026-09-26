@@ -76,11 +76,19 @@ class SecretManager:
             return "principal"
         return account_id.strip().lower()
 
-    def store_key(self, key_hex: str, account_id: str = "principal") -> None:
-        """Store the validated hex key in the OS secure vault."""
+    def store_key(
+        self,
+        key_hex: str,
+        account_id: str = "principal",
+        serial: str | None = None,
+    ) -> None:
+        """Store the validated hex key in the OS secure vault (optionally bound to device serial)."""
         valid_hex = self.validate_hex_key(key_hex)
         target_account = self._normalize_account_id(account_id)
         try:
+            if serial:
+                device_key_id = f"{serial.strip().lower()}_{target_account}"
+                keyring.set_password(self.service_name, device_key_id, valid_hex)
             keyring.set_password(self.service_name, target_account, valid_hex)
             logger.info(f"Encryption key stored securely for account '{target_account}'.")
         except Exception as e:
@@ -90,14 +98,27 @@ class SecretManager:
                 action_recommended="Permite el acceso al almacén de credenciales del sistema o introduce la clave por parámetro.",
             )
 
-    def get_key(self, account_id: str = "principal") -> str | None:
-        """Retrieve the encryption key from the OS secure vault."""
+    def get_key(
+        self,
+        account_id: str = "principal",
+        serial: str | None = None,
+    ) -> str | None:
+        """Retrieve the encryption key from the OS secure vault with serial and account fallback."""
         target_account = self._normalize_account_id(account_id)
         try:
+            # 1. Device-serial specific key
+            if serial:
+                device_key_id = f"{serial.strip().lower()}_{target_account}"
+                dev_key = keyring.get_password(self.service_name, device_key_id)
+                if dev_key:
+                    return self.sanitize_key(dev_key)
+
+            # 2. Account-specific key
             key = keyring.get_password(self.service_name, target_account)
             if key:
                 return self.sanitize_key(key)
-            # Backwards compatibility check for legacy 'default'
+
+            # 3. Backwards compatibility check for legacy 'default'
             if target_account == "principal":
                 legacy_key = keyring.get_password(self.service_name, "default")
                 if legacy_key:
@@ -107,27 +128,50 @@ class SecretManager:
             logger.warning(f"Could not read from OS keyring: {e}")
             return None
 
-    def has_key(self, account_id: str = "principal") -> bool:
+    def has_key(
+        self,
+        account_id: str = "principal",
+        serial: str | None = None,
+    ) -> bool:
         """Check if an encryption key exists in the OS secure vault."""
-        k = self.get_key(account_id)
+        k = self.get_key(account_id, serial=serial)
         return bool(k and len(k) == 64)
 
-    def delete_key(self, account_id: str = "principal") -> bool:
+    def delete_key(
+        self,
+        account_id: str = "principal",
+        serial: str | None = None,
+    ) -> bool:
         """Delete the stored encryption key from the OS secure vault."""
         target_account = self._normalize_account_id(account_id)
+        deleted = False
         try:
+            if serial:
+                device_key_id = f"{serial.strip().lower()}_{target_account}"
+                try:
+                    keyring.delete_password(self.service_name, device_key_id)
+                    deleted = True
+                except Exception:
+                    pass
             keyring.delete_password(self.service_name, target_account)
+            deleted = True
             logger.info(f"Encryption key deleted for account '{target_account}'.")
-            return True
+            return deleted
         except Exception as e:
             logger.warning(f"Could not delete password from keyring: {e}")
-            return False
+            return deleted
 
     def list_stored_accounts(self) -> list[str]:
         """List known account IDs that have stored keys in keyring."""
         candidates = [
             "principal",
             "dual_xiaomi",
+            "samsung_dual",
+            "samsung_secure",
+            "dual_honor",
+            "dual_realme",
+            "dual_oppo",
+            "dual_vivo",
             "business_principal",
             "business_dual",
             "default",

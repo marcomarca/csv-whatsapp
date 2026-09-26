@@ -49,6 +49,7 @@ class VaultDatabase:
                     conversation_type TEXT,
                     original_jid TEXT,
                     account_id TEXT DEFAULT 'principal',
+                    device_serial TEXT DEFAULT '',
                     last_message_at TEXT,
                     message_count INTEGER DEFAULT 0
                 );
@@ -63,6 +64,7 @@ class VaultDatabase:
                     timestamp_local TEXT,
                     message_type TEXT,
                     account_id TEXT DEFAULT 'principal',
+                    device_serial TEXT DEFAULT '',
                     text TEXT,
                     media_path TEXT,
                     media_mime TEXT,
@@ -80,6 +82,7 @@ class VaultDatabase:
                     run_id TEXT PRIMARY KEY,
                     started_at TEXT,
                     account_id TEXT DEFAULT 'principal',
+                    device_serial TEXT DEFAULT '',
                     finished_at TEXT,
                     status TEXT,
                     backup_id TEXT,
@@ -93,19 +96,25 @@ class VaultDatabase:
 
                 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_acc ON messages(account_id);
+                CREATE INDEX IF NOT EXISTS idx_messages_dev_acc ON messages(device_serial, account_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp_utc);
                 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
                 CREATE INDEX IF NOT EXISTS idx_conv_acc ON conversations(account_id);
+                CREATE INDEX IF NOT EXISTS idx_conv_dev_acc ON conversations(device_serial, account_id);
                 CREATE INDEX IF NOT EXISTS idx_backups_sha ON backups(sha256);
             """)
 
-            # Schema migration: check if account_id column exists in existing DB tables
+            # Schema migration: check if account_id & device_serial columns exist
             for table_name in ("conversations", "messages", "export_runs"):
                 cur = conn.execute(f"PRAGMA table_info({table_name});")
                 cols = [r["name"] for r in cur.fetchall()]
                 if "account_id" not in cols:
                     conn.execute(
                         f"ALTER TABLE {table_name} ADD COLUMN account_id TEXT DEFAULT 'principal';"
+                    )
+                if "device_serial" not in cols:
+                    conn.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN device_serial TEXT DEFAULT '';"
                     )
 
             conn.commit()
@@ -186,20 +195,22 @@ class VaultDatabase:
         self,
         conversations: list[Conversation],
         account_id: str = "principal",
+        device_serial: str = "",
     ) -> None:
-        """Upsert conversations list associated with an account."""
+        """Upsert conversations list associated with an account and device."""
         with self._get_connection() as conn:
             for conv in conversations:
                 conn.execute(
                     """
                     INSERT INTO conversations (
                         conversation_id, conversation_name, conversation_type,
-                        original_jid, account_id, last_message_at, message_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        original_jid, account_id, device_serial, last_message_at, message_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         conversation_name = excluded.conversation_name,
                         conversation_type = excluded.conversation_type,
                         account_id = excluded.account_id,
+                        device_serial = excluded.device_serial,
                         last_message_at = CASE 
                             WHEN excluded.last_message_at > conversations.last_message_at OR conversations.last_message_at IS NULL 
                             THEN excluded.last_message_at 
@@ -213,6 +224,7 @@ class VaultDatabase:
                         conv.conversation_type,
                         conv.original_jid,
                         account_id,
+                        device_serial,
                         conv.last_message_at,
                         conv.message_count,
                     ),
@@ -224,15 +236,15 @@ class VaultDatabase:
         messages: list[Message],
         backup_id: str,
         account_id: str = "principal",
+        device_serial: str = "",
     ) -> tuple[int, int, int]:
-        """Consolidate parsed messages into the database for a specific account. Returns (total, inserted, updated)."""
+        """Consolidate parsed messages into the database for a specific account and device."""
         total = len(messages)
         inserted = 0
         updated = 0
 
         with self._get_connection() as conn:
             for msg in messages:
-                # Check if message already exists
                 cur = conn.execute(
                     "SELECT edited, text, media_path FROM messages WHERE message_uid = ?;",
                     (msg.message_uid,),
@@ -240,16 +252,15 @@ class VaultDatabase:
                 existing = cur.fetchone()
 
                 if existing is None:
-                    # New message
                     conn.execute(
                         """
                         INSERT INTO messages (
                             message_uid, conversation_id, sender_id, sender_name,
                             direction, timestamp_utc, timestamp_local, message_type,
-                            account_id, text, media_path, media_mime, media_size, media_status,
+                            account_id, device_serial, text, media_path, media_mime, media_size, media_status,
                             quoted_message_id, forwarded, edited, starred,
                             raw_type_code, source_backup_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                         (
                             msg.message_uid,
@@ -261,6 +272,7 @@ class VaultDatabase:
                             msg.timestamp_local,
                             msg.message_type,
                             account_id,
+                            device_serial,
                             msg.text,
                             msg.media_path,
                             msg.media_mime,
@@ -276,7 +288,6 @@ class VaultDatabase:
                     )
                     inserted += 1
                 else:
-                    # Check if updated (e.g. edited text or added media info)
                     if (
                         msg.edited
                         or msg.text != existing["text"]
@@ -287,6 +298,7 @@ class VaultDatabase:
                             UPDATE messages SET
                                 sender_name = coalesce(?, sender_name),
                                 account_id = ?,
+                                device_serial = ?,
                                 text = ?,
                                 media_path = coalesce(?, media_path),
                                 media_mime = coalesce(?, media_mime),
@@ -299,6 +311,7 @@ class VaultDatabase:
                             (
                                 msg.sender_name,
                                 account_id,
+                                device_serial,
                                 msg.text,
                                 msg.media_path,
                                 msg.media_mime,
@@ -311,32 +324,49 @@ class VaultDatabase:
                         )
                         updated += 1
 
-            # Update conversation message counts and last message timestamps for this account
-            conn.execute("""
-                UPDATE conversations SET
-                    message_count = (SELECT count(*) FROM messages WHERE messages.conversation_id = conversations.conversation_id),
-                    last_message_at = (SELECT max(timestamp_utc) FROM messages WHERE messages.conversation_id = conversations.conversation_id)
-                WHERE account_id = ?;
-            """, (account_id,))
+            # Update conversation stats for this account and device
+            if device_serial:
+                conn.execute("""
+                    UPDATE conversations SET
+                        message_count = (SELECT count(*) FROM messages WHERE messages.conversation_id = conversations.conversation_id),
+                        last_message_at = (SELECT max(timestamp_utc) FROM messages WHERE messages.conversation_id = conversations.conversation_id)
+                    WHERE account_id = ? AND device_serial = ?;
+                """, (account_id, device_serial))
+            else:
+                conn.execute("""
+                    UPDATE conversations SET
+                        message_count = (SELECT count(*) FROM messages WHERE messages.conversation_id = conversations.conversation_id),
+                        last_message_at = (SELECT max(timestamp_utc) FROM messages WHERE messages.conversation_id = conversations.conversation_id)
+                    WHERE account_id = ?;
+                """, (account_id,))
             conn.commit()
 
         logger.info(
-            f"Consolidated {total} messages from backup {backup_id} (account: {account_id}): {inserted} inserted, {updated} updated."
+            f"Consolidated {total} messages from backup {backup_id} (device: '{device_serial}', account: '{account_id}'): {inserted} inserted, {updated} updated."
         )
         return total, inserted, updated
 
-    def get_all_conversations(self, account_id: str | None = None) -> list[Conversation]:
-        """Fetch stored conversations (optionally filtered by account_id) ordered by last message date."""
+    def get_all_conversations(
+        self, account_id: str | None = None, device_serial: str | None = None
+    ) -> list[Conversation]:
+        """Fetch stored conversations (optionally filtered by account_id and device_serial) ordered by last message date."""
         with self._get_connection() as conn:
+            query = "SELECT * FROM conversations"
+            params: list[str] = []
+            conditions: list[str] = []
+
             if account_id:
-                cur = conn.execute(
-                    "SELECT * FROM conversations WHERE account_id = ? ORDER BY last_message_at DESC NULLS LAST;",
-                    (account_id,),
-                )
-            else:
-                cur = conn.execute(
-                    "SELECT * FROM conversations ORDER BY last_message_at DESC NULLS LAST;"
-                )
+                conditions.append("account_id = ?")
+                params.append(account_id)
+            if device_serial:
+                conditions.append("device_serial = ?")
+                params.append(device_serial)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " ORDER BY last_message_at DESC NULLS LAST;"
+
+            cur = conn.execute(query, tuple(params))
             return [
                 Conversation(
                     conversation_id=row["conversation_id"],
@@ -344,56 +374,79 @@ class VaultDatabase:
                     conversation_type=row["conversation_type"],
                     original_jid=row["original_jid"],
                     account_id=row["account_id"] if "account_id" in row.keys() else "principal",
+                    device_serial=row["device_serial"] if "device_serial" in row.keys() else "",
                     last_message_at=row["last_message_at"],
                     message_count=row["message_count"],
                 )
                 for row in cur.fetchall()
             ]
 
-    def get_all_messages(self, account_id: str | None = None) -> list[Message]:
-        """Fetch all stored messages (optionally filtered by account_id) ordered chronologically."""
+    def get_all_messages(
+        self, account_id: str | None = None, device_serial: str | None = None
+    ) -> list[Message]:
+        """Fetch all stored messages (optionally filtered by account_id and device_serial) ordered chronologically."""
         with self._get_connection() as conn:
+            query = "SELECT * FROM messages"
+            params: list[str] = []
+            conditions: list[str] = []
+
             if account_id:
-                cur = conn.execute(
-                    "SELECT * FROM messages WHERE account_id = ? ORDER BY timestamp_utc ASC;",
-                    (account_id,),
-                )
-            else:
-                cur = conn.execute("SELECT * FROM messages ORDER BY timestamp_utc ASC;")
+                conditions.append("account_id = ?")
+                params.append(account_id)
+            if device_serial:
+                conditions.append("device_serial = ?")
+                params.append(device_serial)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " ORDER BY timestamp_utc ASC;"
+
+            cur = conn.execute(query, tuple(params))
             return [self._row_to_message(row) for row in cur.fetchall()]
 
     def get_messages_for_conversation(
-        self, conv_id: str, account_id: str | None = None
+        self,
+        conv_id: str,
+        account_id: str | None = None,
+        device_serial: str | None = None,
     ) -> list[Message]:
         """Fetch all messages for a given conversation ID ordered chronologically."""
         with self._get_connection() as conn:
+            query = "SELECT * FROM messages WHERE conversation_id = ?"
+            params: list[str] = [conv_id]
+
             if account_id:
-                cur = conn.execute(
-                    "SELECT * FROM messages WHERE conversation_id = ? AND account_id = ? ORDER BY timestamp_utc ASC;",
-                    (conv_id, account_id),
-                )
-            else:
-                cur = conn.execute(
-                    "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp_utc ASC;",
-                    (conv_id,),
-                )
+                query += " AND account_id = ?"
+                params.append(account_id)
+            if device_serial:
+                query += " AND device_serial = ?"
+                params.append(device_serial)
+
+            query += " ORDER BY timestamp_utc ASC;"
+            cur = conn.execute(query, tuple(params))
             return [self._row_to_message(row) for row in cur.fetchall()]
 
-    def record_export_run(self, run: ExportRun, account_id: str = "principal") -> None:
+    def record_export_run(
+        self,
+        run: ExportRun,
+        account_id: str = "principal",
+        device_serial: str = "",
+    ) -> None:
         """Record an export run in history."""
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO export_runs (
-                    run_id, started_at, account_id, finished_at, status, backup_id,
+                    run_id, started_at, account_id, device_serial, finished_at, status, backup_id,
                     total_conversations, total_messages, inserted_messages,
                     updated_messages, warnings, error_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
                 (
                     run.run_id,
                     run.started_at,
                     account_id,
+                    device_serial,
                     run.finished_at,
                     run.status,
                     run.backup_id,
@@ -408,25 +461,36 @@ class VaultDatabase:
             conn.commit()
 
     def get_export_runs(
-        self, limit: int = 50, account_id: str | None = None
+        self,
+        limit: int = 50,
+        account_id: str | None = None,
+        device_serial: str | None = None,
     ) -> list[ExportRun]:
-        """Fetch past export execution runs (optionally filtered by account_id)."""
+        """Fetch past export execution runs (optionally filtered by account_id and device_serial)."""
         with self._get_connection() as conn:
+            query = "SELECT * FROM export_runs"
+            params: list[object] = []
+            conditions: list[str] = []
+
             if account_id:
-                cur = conn.execute(
-                    "SELECT * FROM export_runs WHERE account_id = ? ORDER BY started_at DESC LIMIT ?;",
-                    (account_id, limit),
-                )
-            else:
-                cur = conn.execute(
-                    "SELECT * FROM export_runs ORDER BY started_at DESC LIMIT ?;",
-                    (limit,),
-                )
+                conditions.append("account_id = ?")
+                params.append(account_id)
+            if device_serial:
+                conditions.append("device_serial = ?")
+                params.append(device_serial)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " ORDER BY started_at DESC LIMIT ?;"
+            params.append(limit)
+
+            cur = conn.execute(query, tuple(params))
             return [
                 ExportRun(
                     run_id=row["run_id"],
                     started_at=row["started_at"],
                     account_id=row["account_id"] if "account_id" in row.keys() else "principal",
+                    device_serial=row["device_serial"] if "device_serial" in row.keys() else "",
                     finished_at=row["finished_at"],
                     status=row["status"],
                     backup_id=row["backup_id"],
@@ -452,6 +516,7 @@ class VaultDatabase:
             timestamp_local=row["timestamp_local"],
             message_type=row["message_type"],
             account_id=row["account_id"] if "account_id" in row.keys() else "principal",
+            device_serial=row["device_serial"] if "device_serial" in row.keys() else "",
             text=row["text"],
             media_path=row["media_path"],
             media_mime=row["media_mime"],

@@ -117,18 +117,18 @@ class ExportPipeline:
                     f"El backup transferido es idéntico al procesado previamente el {prev_backup.imported_at}."
                 )
 
-            # 5. Encryption Key Resolution for target account
+            # 5. Encryption Key Resolution for target account and device
             notify("KEY_RESOLUTION", f"Obteniendo clave de cifrado para cuenta '{account_id}'...", 55.0)
             effective_key = (
                 key
-                or self.secret_manager.get_key(account_id)
+                or self.secret_manager.get_key(account_id, serial=dev_info.serial)
                 or self.secret_manager.get_key(dev_info.serial)
                 or self.secret_manager.get_key("default")
             )
 
             if not effective_key:
                 raise InvalidKeyError(
-                    reason=f"No se encontró una clave de cifrado guardada para la cuenta '{account_id}'.",
+                    reason=f"No se encontró una clave de cifrado guardada para la cuenta '{account_id}' en el dispositivo '{dev_info.serial}'.",
                     action_recommended=f"Captura o introduce la clave de 64 dígitos con 'uv run python -m src.cli capture-key -a {account_id}'.",
                 )
 
@@ -172,9 +172,11 @@ class ExportPipeline:
                 message_count=len(messages),
             )
             self.vault_db.save_backup_metadata(backup_meta)
-            self.vault_db.upsert_conversations(conversations, account_id=account_id)
+            self.vault_db.upsert_conversations(
+                conversations, account_id=account_id, device_serial=dev_info.serial
+            )
             _tot, inserted, updated = self.vault_db.consolidate_messages(
-                messages, sha256_hash, account_id=account_id
+                messages, sha256_hash, account_id=account_id, device_serial=dev_info.serial
             )
 
             # 9. Pull Media if requested
@@ -183,18 +185,26 @@ class ExportPipeline:
                 media_count = self.device_manager.pull_media(dev_info.serial, AppConfig.MEDIA_DIR)
                 notify("MEDIA", f"Descarga multimedia completada ({media_count} carpetas).", 94.0)
 
-            # 10. Generate CSV files and Manifest in isolated account folder
+            # 10. Generate CSV files and Manifest in isolated account/device folder
+            target_out_dir = output_dir or ExportManager.get_account_export_dir(
+                account_id, device_serial=dev_info.serial
+            )
             notify(
                 "EXPORTING_CSV",
-                f"Generando CSVs en data/exports/{account_id}/...",
+                f"Generando CSVs en {target_out_dir}...",
                 95.0,
             )
-            all_vault_convs = self.vault_db.get_all_conversations(account_id=account_id)
-            all_vault_msgs = self.vault_db.get_all_messages(account_id=account_id)
+            all_vault_convs = self.vault_db.get_all_conversations(
+                account_id=account_id, device_serial=dev_info.serial
+            )
+            all_vault_msgs = self.vault_db.get_all_messages(
+                account_id=account_id, device_serial=dev_info.serial
+            )
 
             manifest = ExportManifest(
                 run_id=run_id,
                 account_id=account_id,
+                device_serial=dev_info.serial,
                 exported_at=datetime.datetime.now(datetime.UTC).isoformat(),
                 backup_file=target_backup.filename,
                 backup_sha256=sha256_hash,
@@ -209,13 +219,13 @@ class ExportPipeline:
                 warnings=warnings_list,
             )
 
-            target_out_dir = output_dir or ExportManager.get_account_export_dir(account_id)
             files_written = ExportManager.export_all(
                 all_vault_convs,
                 all_vault_msgs,
                 manifest,
                 output_dir=target_out_dir,
                 account_id=account_id,
+                device_serial=dev_info.serial,
             )
 
             # Complete Run
@@ -223,16 +233,19 @@ class ExportPipeline:
             run_record.finished_at = finished_at
             run_record.status = "completed"
             run_record.backup_id = sha256_hash
+            run_record.device_serial = dev_info.serial
             run_record.total_conversations = len(all_vault_convs)
             run_record.total_messages = len(all_vault_msgs)
             run_record.inserted_messages = inserted
             run_record.updated_messages = updated
             run_record.warnings = "; ".join(warnings_list)
-            self.vault_db.record_export_run(run_record, account_id=account_id)
+            self.vault_db.record_export_run(
+                run_record, account_id=account_id, device_serial=dev_info.serial
+            )
 
             notify(
                 "COMPLETED",
-                f"Exportación de '{account_id}' completada: {len(all_vault_convs)} chats, {len(all_vault_msgs)} mensajes ({inserted} nuevos, {updated} actualizados).",
+                f"Exportación de '{account_id}' ({dev_info.model or dev_info.serial}) completada: {len(all_vault_convs)} chats, {len(all_vault_msgs)} mensajes ({inserted} nuevos, {updated} actualizados).",
                 100.0,
             )
 
@@ -243,6 +256,7 @@ class ExportPipeline:
                 "account_display_name": target_account.display_name,
                 "backup_filename": target_backup.filename,
                 "backup_sha256": sha256_hash,
+                "device_serial": dev_info.serial,
                 "device_model": dev_info.model or dev_info.serial,
                 "total_conversations": len(all_vault_convs),
                 "total_messages": len(all_vault_msgs),

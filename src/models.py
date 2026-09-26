@@ -10,6 +10,8 @@ class DeviceInfo:
     serial: str
     state: str  # "device", "unauthorized", "offline", "unknown"
     model: str = ""
+    manufacturer: str = ""
+    brand: str = ""
     android_version: str = ""
     whatsapp_packages: list[str] = field(default_factory=list)
 
@@ -52,11 +54,13 @@ class BackupMetadata:
 class WhatsAppAccount:
     """Represents a distinct WhatsApp account profile on the Android device."""
 
-    account_id: str  # "principal", "dual_xiaomi", "business_principal", "business_dual", "work_profile_10"
-    display_name: str  # "WhatsApp (Principal)", "WhatsApp (Dual Xiaomi)"
-    android_user_id: int  # 0, 999, 10, etc.
+    account_id: str  # "principal", "dual_xiaomi", "samsung_dual", "business_principal", etc.
+    display_name: str  # "WhatsApp (Principal)", "WhatsApp (Samsung Dual Messenger)"
+    android_user_id: int  # 0, 95, 96, 150, 999, 10, etc.
     package_name: str  # "com.whatsapp", "com.whatsapp.w4b"
     remote_db_dir: str
+    device_serial: str = ""
+    manufacturer: str = ""
     latest_backup_file: str | None = None
     latest_backup_size_mb: float = 0.0
     latest_backup_date: str | None = None
@@ -73,6 +77,7 @@ class Conversation:
     conversation_type: str  # "individual", "group", "broadcast", "system"
     original_jid: str
     account_id: str = "principal"
+    device_serial: str = ""
     last_message_at: str | None = None
     message_count: int = 0
 
@@ -90,6 +95,7 @@ class Message:
     timestamp_local: str  # ISO-8601 Local
     message_type: str  # "text", "image", "audio", "video", "document", "location", "sticker", "call", "system", "unknown"
     account_id: str = "principal"
+    device_serial: str = ""
     text: str | None = None
     media_path: str | None = None
     media_mime: str | None = None
@@ -110,6 +116,7 @@ class ExportRun:
     run_id: str
     started_at: str
     account_id: str = "principal"
+    device_serial: str = ""
     finished_at: str | None = None
     status: str = "started"  # "started", "completed", "failed"
     backup_id: str | None = None
@@ -134,11 +141,13 @@ class ExportManifest:
     files_generated: list[str]
     tool_versions: dict[str, str]
     account_id: str = "principal"
+    device_serial: str = ""
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "run_id": self.run_id,
+            "device_serial": self.device_serial,
             "account_id": self.account_id,
             "exported_at": self.exported_at,
             "backup_file": self.backup_file,

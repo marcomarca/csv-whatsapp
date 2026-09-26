@@ -206,7 +206,76 @@ def test_list_whatsapp_accounts_with_business(monkeypatch):
 
     w4b_d = next(a for a in accounts if a.account_id == "business_dual")
     assert w4b_d.package_name == "com.whatsapp.w4b"
-    assert w4b_d.display_name == "WhatsApp Business (Dual Xiaomi)"
+    assert w4b_d.display_name == "WhatsApp Business (Dual Xiaomi/Dual Apps - Usuario 999)" or "Dual Xiaomi" in w4b_d.display_name
     assert w4b_d.latest_backup_file == "msgstore.db.crypt15"
     assert w4b_d.is_dual is True
+
+
+def test_list_whatsapp_accounts_samsung(monkeypatch):
+    """Test discovering Samsung Dual Messenger (User 95) and Secure Folder (User 150)."""
+    dev_mgr = DeviceManager(adb_path="mock_adb")
+    monkeypatch.setattr(
+        dev_mgr,
+        "get_devices",
+        lambda: [DeviceInfo(serial="samsung123", state="device", model="Galaxy S22", manufacturer="samsung")],
+    )
+
+    mock_pm_users = "Users:\n\tUserInfo{0:Owner:13} running\n\tUserInfo{95:DualApp:30} running\n\tUserInfo{150:Secure Folder:10} running\n"
+    mock_ls_u0 = "total 5000\n-rw-rw---- 1 u0_a254 everybody 5900000 2026-09-26 01:00 msgstore.db.crypt15\n"
+    mock_ls_u95 = "total 12000\n-rw-rw---- 1 u95_a254 everybody 12500000 2026-09-26 01:00 msgstore.db.crypt15\n"
+    mock_ls_u150 = "total 8000\n-rw-rw---- 1 u150_a254 everybody 8500000 2026-09-26 01:00 msgstore.db.crypt15\n"
+
+    def mock_run(args, timeout=60):
+        cmd_str = " ".join(args)
+        if "pm list users" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_pm_users, stderr="")
+        if "0/Android/media/com.whatsapp/WhatsApp/Databases" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_ls_u0, stderr="")
+        if "95/Android/media/com.whatsapp/WhatsApp/Databases" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_ls_u95, stderr="")
+        if "150/Android/media/com.whatsapp/WhatsApp/Databases" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_ls_u150, stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(dev_mgr, "run_adb", mock_run)
+
+    accounts = dev_mgr.list_whatsapp_accounts("samsung123")
+    assert len(accounts) == 3
+
+    acc0 = next(a for a in accounts if a.account_id == "principal")
+    assert acc0.android_user_id == 0
+
+    acc95 = next(a for a in accounts if a.account_id == "samsung_dual")
+    assert acc95.android_user_id == 95
+    assert "Samsung Dual Messenger" in acc95.display_name
+
+    acc150 = next(a for a in accounts if a.account_id == "samsung_secure")
+    assert acc150.android_user_id == 150
+    assert "Samsung Secure Folder" in acc150.display_name
+
+
+def test_list_whatsapp_accounts_honor_realme(monkeypatch):
+    """Test discovering Honor App Twin and Realme App Cloner."""
+    dev_mgr = DeviceManager(adb_path="mock_adb")
+    
+    # Case Honor
+    monkeypatch.setattr(
+        dev_mgr,
+        "get_devices",
+        lambda: [DeviceInfo(serial="honor123", state="device", model="Honor Magic 5", manufacturer="HONOR")],
+    )
+    mock_pm_honor = "Users:\n\tUserInfo{0:Owner:13} running\n\tUserInfo{999:Twin:801010} running\n"
+    mock_ls = "total 5000\n-rw-rw---- 1 u0_a254 everybody 5900000 2026-09-26 01:00 msgstore.db.crypt15\n"
+
+    def mock_run_honor(args, timeout=60):
+        cmd_str = " ".join(args)
+        if "pm list users" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_pm_honor, stderr="")
+        if "WhatsApp/Databases" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_ls, stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(dev_mgr, "run_adb", mock_run_honor)
+    honor_accs = dev_mgr.list_whatsapp_accounts("honor123")
+    assert any(a.account_id == "dual_honor" for a in honor_accs)
 

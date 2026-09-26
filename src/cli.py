@@ -204,7 +204,8 @@ def cmd_devices(args: argparse.Namespace) -> int:
 def cmd_key(args: argparse.Namespace) -> int:
     """Manage encryption keys stored in the OS secure vault."""
     sec_mgr = SecretManager()
-    target_account = args.account or "principal"
+    target_account = getattr(args, "account", "principal") or "principal"
+    serial = getattr(args, "serial", None)
 
     if args.action == "set":
         if not args.value:
@@ -214,9 +215,11 @@ def cmd_key(args: argparse.Namespace) -> int:
             )
             return 1
         try:
-            sec_mgr.store_key(args.value, account_id=target_account)
+            sec_mgr.store_key(args.value, account_id=target_account, serial=serial)
             print(
-                f"Clave guardada con éxito en el almacén seguro para la cuenta '{target_account}'."
+                f"Clave guardada con éxito en el almacén seguro para la cuenta '{target_account}'"
+                + (f" (dispositivo: {serial})" if serial else "")
+                + "."
             )
             return 0
         except WhatsAppBackupError as e:
@@ -224,15 +227,19 @@ def cmd_key(args: argparse.Namespace) -> int:
             return 1
 
     elif args.action == "get":
-        stored = sec_mgr.get_key(account_id=target_account)
+        stored = sec_mgr.get_key(account_id=target_account, serial=serial)
         if stored:
-            print(f"Clave almacenada ({target_account}): {sec_mgr.mask_key(stored)}")
+            print(
+                f"Clave almacenada ({target_account}"
+                + (f", serial {serial}" if serial else "")
+                + f"): {sec_mgr.mask_key(stored)}"
+            )
         else:
             print(f"No hay ninguna clave guardada para la cuenta '{target_account}'.")
         return 0
 
     elif args.action == "clear":
-        deleted = sec_mgr.delete_key(account_id=target_account)
+        deleted = sec_mgr.delete_key(account_id=target_account, serial=serial)
         if deleted:
             print(
                 f"Clave eliminada del almacén seguro para la cuenta '{target_account}'."
@@ -247,7 +254,11 @@ def cmd_key(args: argparse.Namespace) -> int:
 def cmd_history(args: argparse.Namespace) -> int:
     """Display past export runs."""
     vault = VaultDatabase()
-    runs = vault.get_export_runs(limit=args.limit, account_id=args.account)
+    account_filter = getattr(args, "account", None)
+    serial_filter = getattr(args, "serial", None)
+    runs = vault.get_export_runs(
+        limit=args.limit, account_id=account_filter, device_serial=serial_filter
+    )
 
     if not runs:
         print("No hay historial de ejecuciones registrado.")
@@ -255,13 +266,14 @@ def cmd_history(args: argparse.Namespace) -> int:
 
     print(f"\nHistorial de exportaciones (últimas {len(runs)}):")
     print(
-        f"{'Fecha':<20} | {'Cuenta':<15} | {'Estado':<10} | {'Chats':<6} | {'Mensajes':<8} | {'Nuevos':<6} | {'ID Ejecución'}"
+        f"{'Fecha':<20} | {'Dispositivo':<15} | {'Cuenta':<15} | {'Estado':<10} | {'Chats':<6} | {'Mensajes':<8} | {'Nuevos':<6} | {'ID Ejecución'}"
     )
-    print("-" * 95)
+    print("-" * 115)
     for r in runs:
         dt_str = r.started_at[:19].replace("T", " ") if r.started_at else "?"
+        dev_str = r.device_serial or "default"
         print(
-            f"{dt_str:<20} | {r.account_id:<15} | {r.status:<10} | {r.total_conversations:<6} | {r.total_messages:<8} | {r.inserted_messages:<6} | {r.run_id}"
+            f"{dt_str:<20} | {dev_str:<15} | {r.account_id:<15} | {r.status:<10} | {r.total_conversations:<6} | {r.total_messages:<8} | {r.inserted_messages:<6} | {r.run_id}"
         )
     return 0
 
@@ -348,7 +360,7 @@ def cmd_capture_key(args: argparse.Namespace) -> int:
         print("========================================================")
 
         if not args.no_save:
-            sec_mgr.store_key(key_hex, account)
+            sec_mgr.store_key(key_hex, account, serial=args.serial)
             print(
                 f"\n[OK] Clave guardada de forma segura en el almacén OS para la cuenta '{account}'."
             )
@@ -367,7 +379,7 @@ def cmd_capture_key(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="whatsapp-csv",
-        description="WhatsApp Backup to CSV: Extracción automatizada y descifrado de WhatsApp vía ADB con soporte multi-cuenta.",
+        description="WhatsApp Backup to CSV: Extracción automatizada y descifrado de WhatsApp vía ADB con soporte multi-cuenta y multi-dispositivo.",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Habilitar registros de depuración"
@@ -377,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # accounts
     p_accs = subparsers.add_parser(
-        "accounts", help="Lista todas las cuentas de WhatsApp detectadas en el teléfono (Principal, Dual Xiaomi, Business, etc.)"
+        "accounts", help="Lista todas las cuentas de WhatsApp detectadas en el teléfono (Samsung, Xiaomi, Honor, Realme, Oppo, etc.)"
     )
     p_accs.add_argument("-s", "--serial", help="Número de serie del dispositivo Android específico")
 
@@ -389,7 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-a",
         "--account",
         default="principal",
-        help="Identificador de cuenta (ej. 'principal', 'dual_xiaomi'). Por defecto: 'principal'",
+        help="Identificador de cuenta (ej. 'principal', 'dual_xiaomi', 'samsung_dual'). Por defecto: 'principal'",
     )
     p_export.add_argument("-k", "--key", help="Clave hexadecimal de 64 caracteres de WhatsApp")
     p_export.add_argument(
@@ -436,6 +448,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--account",
         default="principal",
         help="Identificador de cuenta para la clave (por defecto 'principal')",
+    )
+    p_key.add_argument(
+        "-s",
+        "--serial",
+        help="Número de serie del dispositivo para vincular la clave a un teléfono concreto",
+    )
+
+    # history
+    p_hist = subparsers.add_parser("history", help="Consulta el historial de exportaciones previas")
+    p_hist.add_argument(
+        "-l", "--limit", type=int, default=20, help="Número máximo de registros a mostrar"
+    )
+    p_hist.add_argument(
+        "-a", "--account", help="Filtrar historial por identificador de cuenta"
+    )
+    p_hist.add_argument(
+        "-s", "--serial", help="Filtrar historial por número de serie del dispositivo"
     )
 
     # capture-key (OCR)

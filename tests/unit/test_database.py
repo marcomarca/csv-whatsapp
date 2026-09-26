@@ -166,3 +166,49 @@ def test_vault_multi_account_isolation(tmp_path: Path):
     assert len(dual_msgs) == 1
     assert dual_msgs[0].text == "Personal dual message"
 
+
+def test_vault_multi_device_isolation(tmp_path: Path):
+    """Test that messages and conversations belonging to different hardware devices are isolated."""
+    db_file = tmp_path / "test_vault_multi_dev.db"
+    vault = VaultDatabase(db_file)
+
+    # Message from POCO Phone
+    m_poco = Message(
+        message_uid="UID_POCO_01",
+        conversation_id="chat_1",
+        sender_id="sender_poco",
+        sender_name="Poco Contact",
+        direction="incoming",
+        timestamp_utc="2026-09-25T10:00:00Z",
+        timestamp_local="2026-09-25T10:00:00Z",
+        message_type="text",
+        text="Poco device message",
+        source_backup_id="bk_poco",
+    )
+    vault.consolidate_messages([m_poco], "bk_poco", account_id="principal", device_serial="poco_c83eb1a")
+
+    # Message from Samsung Phone
+    m_samsung = Message(
+        message_uid="UID_SAMSUNG_01",
+        conversation_id="chat_1",
+        sender_id="sender_samsung",
+        sender_name="Samsung Contact",
+        direction="incoming",
+        timestamp_utc="2026-09-25T11:00:00Z",
+        timestamp_local="2026-09-25T11:00:00Z",
+        message_type="text",
+        text="Samsung device message",
+        source_backup_id="bk_samsung",
+    )
+    vault.consolidate_messages([m_samsung], "bk_samsung", account_id="principal", device_serial="samsung_r58m")
+
+    # Filtered by device serial
+    poco_msgs = vault.get_all_messages(account_id="principal", device_serial="poco_c83eb1a")
+    assert len(poco_msgs) == 1
+    assert poco_msgs[0].text == "Poco device message"
+
+    samsung_msgs = vault.get_all_messages(account_id="principal", device_serial="samsung_r58m")
+    assert len(samsung_msgs) == 1
+    assert samsung_msgs[0].text == "Samsung device message"
+
+

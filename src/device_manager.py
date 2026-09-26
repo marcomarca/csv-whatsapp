@@ -78,20 +78,29 @@ class DeviceManager:
         return devices
 
     def _populate_device_details(self, dev: DeviceInfo) -> None:
-        """Fetch model, Android OS version, and WhatsApp packages for an authorized device."""
+        """Fetch model, manufacturer, brand, Android OS version, and WhatsApp packages for an authorized device."""
         # 1. Model
         model_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.model"])
         if model_res.returncode == 0:
             dev.model = model_res.stdout.strip()
 
-        # 2. Android Version
+        # 2. Manufacturer & Brand
+        mfg_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.manufacturer"])
+        if mfg_res.returncode == 0:
+            dev.manufacturer = mfg_res.stdout.strip()
+
+        brand_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.brand"])
+        if brand_res.returncode == 0:
+            dev.brand = brand_res.stdout.strip()
+
+        # 3. Android Version
         ver_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.build.version.release"])
         if ver_res.returncode == 0:
             dev.android_version = ver_res.stdout.strip()
 
-        # 3. WhatsApp packages across user profiles
+        # 4. WhatsApp packages across known OEM user profiles
         installed = set()
-        for user_id in (0, 999, 10):
+        for user_id in (0, 95, 96, 150, 999, 10):
             pkg_res = self.run_adb(
                 ["-s", dev.serial, "shell", f"pm list packages --user {user_id}"]
             )
@@ -131,29 +140,41 @@ class DeviceManager:
         return dev
 
     def list_whatsapp_accounts(self, serial: str | None = None) -> list[WhatsAppAccount]:
-        """Discover all distinct WhatsApp account profiles (User 0, Xiaomi Dual App 999, Work Profile, etc.)."""
+        """Discover all WhatsApp accounts across OEMs (Samsung, Xiaomi, Honor, Realme, Oppo, Vivo, generic multi-user)."""
         dev = self.get_active_device(serial)
         accounts: list[WhatsAppAccount] = []
+        user_labels: dict[int, str] = {0: "Principal"}
 
-        # 1. Discover Android user IDs
+        # 1. Discover Android user IDs via pm list users
         user_ids = [0]
         users_res = self.run_adb(["-s", dev.serial, "shell", "pm", "list", "users"])
         if users_res.returncode == 0:
-            # Lines like: UserInfo{0:Propietario:c13} running, UserInfo{999:XSpace:801010} running
-            for match in re.finditer(r"UserInfo\{(\d+):([^:]+):", users_res.stdout):
+            for match in re.finditer(r"UserInfo\{(\d+):([^:]*):", users_res.stdout):
                 uid = int(match.group(1))
+                label = match.group(2).strip()
+                user_labels[uid] = label
                 if uid not in user_ids:
                     user_ids.append(uid)
 
-        # Fallback check for Xiaomi Dual User 999 if not listed
-        if 999 not in user_ids:
-            check_999 = self.run_adb(["-s", dev.serial, "shell", "ls /storage/emulated/999/"])
-            if check_999.returncode == 0:
-                user_ids.append(999)
+        # 2. Filesystem probe for OEM storage directories
+        # Probe Samsung Dual Messenger (95, 96), Knox Secure Folder (150, 151), Xiaomi/Honor/Realme (999), Work (10, 11)
+        common_uids = (95, 96, 150, 151, 999, 10, 11, 12)
+        for check_uid in common_uids:
+            if check_uid not in user_ids:
+                check_res = self.run_adb(
+                    ["-s", dev.serial, "shell", f"ls -d /storage/emulated/{check_uid}/ 2>/dev/null"]
+                )
+                if check_res.returncode == 0 and str(check_uid) in check_res.stdout:
+                    user_ids.append(check_uid)
 
-        # 2. Check candidate directories for each user profile and package
+        mfg = (dev.manufacturer or dev.brand or "").lower()
+
+        # 3. Check candidate directories for each user profile and package
         seen_dirs = set()
-        for uid in user_ids:
+        for uid in sorted(user_ids):
+            user_label = user_labels.get(uid, "")
+            user_label_lower = user_label.lower()
+
             for pkg in AppConfig.REMOTE_WHATSAPP_PACKAGES:
                 is_business = pkg == "com.whatsapp.w4b"
                 subfolder = "WhatsApp Business" if is_business else "WhatsApp"
@@ -172,31 +193,47 @@ class DeviceManager:
 
                     res = self.run_adb(["-s", dev.serial, "shell", f"ls -la '{cdir}' 2>/dev/null"])
                     if res.returncode == 0 and res.stdout.strip():
-                        # Parse files in this backup directory
                         backups = self._parse_ls_output(res.stdout, cdir)
                         if backups:
                             seen_dirs.add(cdir)
                             latest = backups[0]
+                            is_dual = uid != 0
 
-                            # Determine account ID and display name
-                            is_dual = uid == 999
-                            if uid == 0 and not is_business:
-                                account_id = "principal"
-                                display_name = "WhatsApp (Principal - Usuario 0)"
-                            elif uid == 999 and not is_business:
-                                account_id = "dual_xiaomi"
-                                display_name = "WhatsApp (Dual Xiaomi - Usuario 999)"
-                            elif uid == 0 and is_business:
-                                account_id = "business_principal"
-                                display_name = "WhatsApp Business (Principal)"
-                            elif uid == 999 and is_business:
-                                account_id = "business_dual"
-                                display_name = "WhatsApp Business (Dual Xiaomi)"
+                            # Determine semantic account ID and display name
+                            if uid == 0:
+                                if is_business:
+                                    account_id = "business_principal"
+                                    display_name = "WhatsApp Business (Principal)"
+                                else:
+                                    account_id = "principal"
+                                    display_name = "WhatsApp (Principal - Usuario 0)"
+                            elif "samsung" in mfg or uid in (95, 96) or "dualapp" in user_label_lower:
+                                if uid in (95, 96) or "dualapp" in user_label_lower:
+                                    account_id = "business_samsung_dual" if is_business else "samsung_dual"
+                                    display_name = f"WhatsApp {'Business ' if is_business else ''}(Samsung Dual Messenger - Usuario {uid})"
+                                elif uid >= 150 or "secure" in user_label_lower or "knox" in user_label_lower:
+                                    account_id = "business_samsung_secure" if is_business else "samsung_secure"
+                                    display_name = f"WhatsApp {'Business ' if is_business else ''}(Samsung Secure Folder - Usuario {uid})"
+                                else:
+                                    account_id = f"{'business_' if is_business else ''}samsung_user_{uid}"
+                                    display_name = f"WhatsApp {'Business ' if is_business else ''}(Samsung Perfil {uid})"
+                            elif "honor" in mfg or "huawei" in mfg or "twin" in user_label_lower:
+                                account_id = "business_dual_honor" if is_business else "dual_honor"
+                                display_name = f"WhatsApp {'Business ' if is_business else ''}(Honor App Twin - Usuario {uid})"
+                            elif "realme" in mfg or "oppo" in mfg or "oneplus" in mfg or "clone" in user_label_lower:
+                                brand_name = "Realme" if "realme" in mfg else ("OnePlus" if "oneplus" in mfg else "Oppo")
+                                account_id = f"{'business_' if is_business else ''}dual_{brand_name.lower()}"
+                                display_name = f"WhatsApp {'Business ' if is_business else ''}({brand_name} App Cloner - Usuario {uid})"
+                            elif "vivo" in mfg or "iqoo" in mfg:
+                                account_id = "business_dual_vivo" if is_business else "dual_vivo"
+                                display_name = f"WhatsApp {'Business ' if is_business else ''}(Vivo App Clone - Usuario {uid})"
+                            elif uid == 999:
+                                # Xiaomi / General Dual App fallback (maintains exact compatibility with dual_xiaomi)
+                                account_id = "business_dual" if is_business else "dual_xiaomi"
+                                display_name = f"WhatsApp {'Business ' if is_business else ''}(Dual Xiaomi/Dual Apps - Usuario {uid})"
                             else:
-                                account_id = f"user_{uid}_{pkg.replace('.', '_')}"
-                                display_name = (
-                                    f"WhatsApp {'Business ' if is_business else ''}(Usuario {uid})"
-                                )
+                                account_id = f"{'business_' if is_business else ''}user_{uid}"
+                                display_name = f"WhatsApp {'Business ' if is_business else ''}(Usuario {uid})"
 
                             acc = WhatsAppAccount(
                                 account_id=account_id,
@@ -204,13 +241,14 @@ class DeviceManager:
                                 android_user_id=uid,
                                 package_name=pkg,
                                 remote_db_dir=cdir,
+                                device_serial=dev.serial,
+                                manufacturer=dev.manufacturer or dev.brand or "Android",
                                 latest_backup_file=latest.filename,
                                 latest_backup_size_mb=round(latest.file_size / (1024 * 1024), 2),
                                 latest_backup_date=latest.modified_at,
                                 crypt_format=latest.format,
                                 is_dual=is_dual,
                             )
-                            # Avoid duplicates by account_id
                             if not any(a.account_id == acc.account_id for a in accounts):
                                 accounts.append(acc)
                             break

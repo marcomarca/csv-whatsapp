@@ -211,13 +211,14 @@ class AppUI(tk.Tk):
         self._refresh_account_specific_badges()
 
     def _refresh_account_specific_badges(self):
-        """Update Key, Backup, and Vault status specifically for the selected account."""
+        """Update Key, Backup, and Vault status specifically for the selected account and active device."""
         acc_id = self.selected_account_id
+        dev_serial = getattr(self, "active_device_serial", "")
 
         # Key status
-        has_key = self.secret_manager.has_key(acc_id)
+        has_key = self.secret_manager.has_key(acc_id, serial=dev_serial)
         if has_key:
-            key_val = self.secret_manager.get_key(acc_id) or ""
+            key_val = self.secret_manager.get_key(acc_id, serial=dev_serial) or ""
             self.lbl_key.config(
                 text=f"Configurada ({self.secret_manager.mask_key(key_val)})",
                 style="BadgeOK.TLabel",
@@ -237,14 +238,15 @@ class AppUI(tk.Tk):
             self.lbl_backup.config(text="Sin copias de seguridad encontradas")
 
         # Vault status for this account
-        convs = self.vault_db.get_all_conversations(account_id=acc_id)
-        msgs = self.vault_db.get_all_messages(account_id=acc_id)
+        convs = self.vault_db.get_all_conversations(account_id=acc_id, device_serial=dev_serial)
+        msgs = self.vault_db.get_all_messages(account_id=acc_id, device_serial=dev_serial)
         self.lbl_vault.config(
             text=f"{len(convs)} conversaciones | {len(msgs)} mensajes en '{acc_id}'"
         )
 
     def refresh_status(self):
         """Query ADB, Keyring, and Vault to refresh status badges and account list."""
+        self.active_device_serial = ""
         try:
             devices = self.device_manager.get_devices()
             if not devices:
@@ -256,8 +258,10 @@ class AppUI(tk.Tk):
             else:
                 dev = devices[0]
                 if dev.is_authorized:
+                    self.active_device_serial = dev.serial
+                    mfg_str = f" [{dev.manufacturer}]" if dev.manufacturer else ""
                     self.lbl_device.config(
-                        text=f"{dev.model or dev.serial} (Android {dev.android_version or '?'})",
+                        text=f"{dev.model or dev.serial}{mfg_str} (Android {dev.android_version or '?'})",
                         style="BadgeOK.TLabel",
                     )
                     self.lbl_adb.config(text="Autorizado", style="BadgeOK.TLabel")
@@ -278,6 +282,7 @@ class AppUI(tk.Tk):
                                     e
                                     for e in acc_entries
                                     if e.startswith(f"[{self.selected_account_id}]")
+                                    or f"[{self.selected_account_id}]" in e
                                 ),
                                 acc_entries[0],
                             )
@@ -306,6 +311,7 @@ class AppUI(tk.Tk):
         CaptureKeyDialog(
             parent=self,
             account_id=self.selected_account_id,
+            device_serial=getattr(self, "active_device_serial", ""),
             on_key_saved=lambda key: self.refresh_status(),
         )
 
@@ -318,7 +324,11 @@ class AppUI(tk.Tk):
         )
         if key:
             try:
-                self.secret_manager.store_key(key, self.selected_account_id)
+                self.secret_manager.store_key(
+                    key,
+                    self.selected_account_id,
+                    serial=getattr(self, "active_device_serial", None),
+                )
                 messagebox.showinfo(
                     "Clave Guardada",
                     f"La clave se ha validado y guardado de forma segura para la cuenta '{self.selected_account_id}'.",
@@ -333,21 +343,34 @@ class AppUI(tk.Tk):
     def show_connection_guide(self):
         """Show interactive onboarding instructions for connecting Android phone."""
         guide_msg = (
-            "PASOS PARA CONFIGURAR TU TELÉFONO ANDROID:\n\n"
+            "PASOS PARA CONFIGURAR TU TELÉFONO ANDROID (Samsung, Xiaomi, Honor, Realme, Oppo, etc.):\n\n"
             "1. Conecta el teléfono por USB con un cable de transferencia de datos.\n"
             "2. Desbloquea la pantalla de tu teléfono.\n"
             "3. En Android: Abre Ajustes > Información del teléfono y pulsa 7 veces 'Número de compilación'.\n"
             "4. Regresa a Ajustes > Opciones de desarrollador > Activa 'Depuración por USB'.\n"
             "5. En la pantalla del teléfono aparecerá: '¿Permitir depuración por USB desde este equipo?'. Acepta la solicitud.\n"
-            "6. En WhatsApp (Principal o Dual): Ajustes > Chats > Copia de seguridad > Copia de seguridad cifrada de extremo a extremo > Guardar clave de 64 dígitos y pulsa 'Guardar' para crear el backup."
+            "6. En WhatsApp (Principal, Dual o Business): Ajustes > Chats > Copia de seguridad > Copia de seguridad cifrada de extremo a extremo > Guardar clave de 64 dígitos y pulsa 'Guardar' para crear el backup."
         )
         messagebox.showinfo("Guía de Conexión USB y WhatsApp", guide_msg, parent=self)
 
     def open_exports_folder(self):
-        """Open the data/exports/<account_id> folder in Windows Explorer or OS file manager."""
+        """Open the data/exports/<device>/<account_id> folder in Windows Explorer or OS file manager."""
         AppConfig.ensure_directories()
         from src.export_manager import ExportManager
-        target_dir = ExportManager.get_account_export_dir(self.selected_account_id)
+
+        target_dir = ExportManager.get_account_export_dir(
+            self.selected_account_id, device_serial=getattr(self, "active_device_serial", "")
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(target_dir))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(target_dir)])
+            else:
+                subprocess.Popen(["xdg-open", str(target_dir)])
+        except Exception as e:
+            self.log_message(f"No se pudo abrir la carpeta de exportaciones: {e}")
         target_dir.mkdir(parents=True, exist_ok=True)
         path = str(target_dir.resolve())
         if sys.platform == "win32":
