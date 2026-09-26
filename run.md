@@ -11,22 +11,29 @@ Guía rápida de comandos para desarrollo, pruebas y ejecución de la aplicació
 uv run python -m src.app
 ```
 *O haz doble clic en `scripts\gui.bat`.*
+- En la interfaz gráfica, usa el botón **📷 Capturar Clave (OCR)** para capturar la pantalla del teléfono, delimitar el área con el ratón y extraer la clave de 64 dígitos automáticamente.
 
 ---
 
-## 2. Línea de Comandos (CLI)
+## 2. Captura y Extracción OCR de la Clave
 
-### Consultar estado del teléfono, ADB y clave
+### Capturar pantalla por ADB y extraer clave con OCR (CLI)
 ```bash
-uv run python -m src.cli status
+# Captura automática usando el área guardada (ROI)
+uv run python -m src.cli capture-key
+
+# Capturar y especificar área normalizada (x_min, y_min, x_max, y_max) y guardarla como referencia
+uv run python -m src.cli capture-key --roi 0.08,0.35,0.92,0.65 --save-roi
+
+# Solo imprimir clave por pantalla sin guardarla en el almacén de contraseñas
+uv run python -m src.cli capture-key --no-save
 ```
 
-### Listar dispositivos conectados y backups disponibles en el teléfono
-```bash
-uv run python -m src.cli devices
-```
+---
 
-### Guardar la clave de cifrado de 64 caracteres en el almacén seguro (OS Keyring)
+## 3. Gestión Manual de Claves (OS Keyring)
+
+### Guardar la clave de 64 caracteres hex en el almacén seguro
 ```bash
 uv run python -m src.cli key set "TU_CLAVE_HEXADECIMAL_DE_64_CARACTERES"
 ```
@@ -38,6 +45,20 @@ uv run python -m src.cli key get
 
 # Eliminar clave guardada
 uv run python -m src.cli key clear
+```
+
+---
+
+## 4. Exportación a CSV
+
+### Consultar estado del teléfono, ADB y clave
+```bash
+uv run python -m src.cli status
+```
+
+### Listar dispositivos conectados y backups disponibles en el teléfono
+```bash
+uv run python -m src.cli devices
 ```
 
 ### Ejecutar exportación completa a CSV
@@ -73,7 +94,7 @@ uv run python -m src.cli parse-local "data/backups/archivo.crypt15" -k "CLAVE_HE
 
 ---
 
-## 3. Calidad y Pruebas
+## 5. Calidad y Pruebas
 
 ### Ejecutar suite completa de pruebas (pytest)
 ```bash
@@ -94,7 +115,7 @@ uv run ruff format src
 
 ---
 
-## 4. Archivos de Salida
+## 6. Archivos de Salida
 
 Los resultados se encuentran en `data/exports/`:
 - `data/exports/all_messages.csv`: Todos los mensajes en una sola tabla.

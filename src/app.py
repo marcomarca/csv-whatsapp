@@ -11,6 +11,7 @@ from src.config import AppConfig
 from src.database import VaultDatabase
 from src.device_manager import DeviceManager
 from src.errors import WhatsAppBackupError
+from src.ocr_dialog import CaptureKeyDialog
 from src.pipeline import ExportPipeline
 from src.secret_manager import SecretManager
 
@@ -145,9 +146,16 @@ class AppUI(tk.Tk):
         sec_frame = ttk.Frame(self, padding="15 5")
         sec_frame.pack(fill=tk.X)
 
-        ttk.Button(sec_frame, text="🔑 Configurar Clave", command=self.prompt_set_key).pack(
-            side=tk.LEFT, padx=3
-        )
+        ttk.Button(
+            sec_frame,
+            text="📷 Capturar Clave (OCR)",
+            command=self.open_ocr_dialog,
+        ).pack(side=tk.LEFT, padx=3)
+        ttk.Button(
+            sec_frame,
+            text="🔑 Clave Manual",
+            command=self.prompt_set_key,
+        ).pack(side=tk.LEFT, padx=3)
         ttk.Button(
             sec_frame, text="📱 Guía de Conexión USB", command=self.show_connection_guide
         ).pack(side=tk.LEFT, padx=3)
@@ -231,6 +239,13 @@ class AppUI(tk.Tk):
         msgs = self.vault_db.get_all_messages()
         self.lbl_vault.config(
             text=f"{len(convs)} conversaciones | {len(msgs)} mensajes almacenados"
+        )
+
+    def open_ocr_dialog(self):
+        """Open the interactive screen cropping and OCR dialog."""
+        CaptureKeyDialog(
+            parent=self,
+            on_key_saved=lambda key: self.refresh_status(),
         )
 
     def prompt_set_key(self):

@@ -12,6 +12,7 @@ from src.errors import WhatsAppBackupError
 from src.export_manager import ExportManager
 from src.message_parser import MessageParser
 from src.models import ExportManifest
+from src.ocr_manager import OCRManager
 from src.pipeline import ExportPipeline
 from src.secret_manager import SecretManager
 
@@ -252,6 +253,66 @@ def cmd_parse_local(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_capture_key(args: argparse.Namespace) -> int:
+    """Capture phone screen via ADB and extract 64-hex key via OCR."""
+    ocr_mgr = OCRManager()
+    sec_mgr = SecretManager()
+
+    print("\n--- Captura OCR de Clave de WhatsApp (64 dígitos) ---")
+    print("[1/3] Capturando pantalla del dispositivo Android conectado por ADB...")
+
+    try:
+        img = ocr_mgr.capture_screenshot(serial=args.serial)
+        print(f"      Pantalla capturada con éxito ({img.width}x{img.height} px).")
+
+        roi = None
+        if args.roi:
+            parts = [float(x.strip()) for x in args.roi.split(",")]
+            if len(parts) == 4:
+                roi = {
+                    "x_min": parts[0],
+                    "y_min": parts[1],
+                    "x_max": parts[2],
+                    "y_max": parts[3],
+                }
+                if args.save_roi:
+                    ocr_mgr.save_roi(roi)
+        else:
+            saved = ocr_mgr.get_saved_roi()
+            if saved:
+                roi = saved
+                print(
+                    f"      Usando área ROI guardada: ({saved['x_min']}, {saved['y_min']}) a ({saved['x_max']}, {saved['y_max']})"
+                )
+
+        print("[2/3] Procesando imagen y ejecutando OCR...")
+        key_hex, _raw_text = ocr_mgr.extract_key_from_image(img, roi)
+
+        formatted = " ".join([key_hex[i : i + 4] for i in range(0, 64, 4)])
+        print("[3/3] ¡Clave detectada y verificada con éxito!")
+        print("\n========================================================")
+        print("  CLAVE DETECTADA (64 HEX):")
+        print(f"  {formatted}")
+        print("========================================================")
+
+        if not args.no_save:
+            account = args.account or "default"
+            sec_mgr.store_key(key_hex, account)
+            print(
+                f"\n[OK] Clave guardada de forma segura en el almacén OS para la cuenta '{account}'."
+            )
+
+        return 0
+
+    except WhatsAppBackupError as e:
+        print(f"\n[ERROR: {e.code}] {e.message}", file=sys.stderr)
+        print(f"Acción recomendada: {e.action_recommended}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"\n[ERROR INESPERADO] {e}", file=sys.stderr)
+        return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="whatsapp-csv",
@@ -312,6 +373,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Identificador de cuenta/dispositivo para la clave (por defecto 'default')",
     )
 
+    # capture-key (OCR)
+    p_ocr = subparsers.add_parser(
+        "capture-key",
+        help="Captura la pantalla del teléfono por ADB y extrae la clave de 64 hex con OCR",
+    )
+    p_ocr.add_argument("-s", "--serial", help="Número de serie del dispositivo Android específico")
+    p_ocr.add_argument(
+        "--roi",
+        help="Coordenadas normalizadas del área x_min,y_min,x_max,y_max (ej. 0.08,0.35,0.92,0.65)",
+    )
+    p_ocr.add_argument(
+        "--save-roi",
+        action="store_true",
+        help="Guardar el área ROI especificada como predeterminada",
+    )
+    p_ocr.add_argument(
+        "--no-save",
+        action="store_true",
+        help="No guardar automáticamente la clave en el almacén seguro (solo imprimir)",
+    )
+    p_ocr.add_argument(
+        "--account",
+        help="Identificador de cuenta para la clave (por defecto 'default')",
+    )
+
     # history
     p_hist = subparsers.add_parser(
         "history", help="Muestra el historial de exportaciones realizadas"
@@ -341,6 +427,7 @@ def main() -> None:
         # Default action: status or help
         cmd_status(args)
         print("\nPara ejecutar la exportación completa: python -m src.cli export")
+        print("Para capturar la clave con OCR: python -m src.cli capture-key")
         print("Para ver todas las opciones: python -m src.cli --help\n")
         sys.exit(0)
 
@@ -349,6 +436,7 @@ def main() -> None:
         "status": cmd_status,
         "devices": cmd_devices,
         "key": cmd_key,
+        "capture-key": cmd_capture_key,
         "history": cmd_history,
         "parse-local": cmd_parse_local,
     }

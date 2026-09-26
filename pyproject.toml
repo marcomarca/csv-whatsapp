@@ -11,8 +11,11 @@ dependencies = [
     "keyring>=25.7.0",
     "numpy>=2.0.0",
     "pandas>=2.2.0",
+    "pillow>=12.3.0",
     "pycryptodome>=3.20.0",
+    "rapidocr-onnxruntime>=1.4.4",
     "wa-crypt-tools>=0.1.0",
+    "winocr>=0.0.15",
 ]
 
 [project.optional-dependencies]
