@@ -173,3 +173,40 @@ def test_list_whatsapp_accounts_dual_apps(monkeypatch):
     assert acc999.latest_backup_file == "msgstore.db.crypt14"
     assert acc999.is_dual is True
 
+
+def test_list_whatsapp_accounts_with_business(monkeypatch):
+    """Test discovering WhatsApp Business alongside standard and dual accounts."""
+    dev_mgr = DeviceManager(adb_path="mock_adb")
+    monkeypatch.setattr(
+        dev_mgr,
+        "get_devices",
+        lambda: [DeviceInfo(serial="poco123", state="device", model="POCO X3 Pro")],
+    )
+
+    mock_pm_users = "Users:\n\tUserInfo{0:Propietario:c13} running\n\tUserInfo{999:XSpace:801010} running\n"
+    mock_ls_w4b = "total 8000\n-rw-rw---- 1 u0_a254 everybody 8100000 2026-09-26 01:00 msgstore.db.crypt15\n"
+
+    def mock_run(args, timeout=60):
+        cmd_str = " ".join(args)
+        if "pm list users" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_pm_users, stderr="")
+        if "com.whatsapp.w4b" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_ls_w4b, stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(dev_mgr, "run_adb", mock_run)
+
+    accounts = dev_mgr.list_whatsapp_accounts("poco123")
+    assert len(accounts) == 2
+    w4b_p = next(a for a in accounts if a.account_id == "business_principal")
+    assert w4b_p.package_name == "com.whatsapp.w4b"
+    assert w4b_p.display_name == "WhatsApp Business (Principal)"
+    assert w4b_p.latest_backup_file == "msgstore.db.crypt15"
+    assert w4b_p.is_dual is False
+
+    w4b_d = next(a for a in accounts if a.account_id == "business_dual")
+    assert w4b_d.package_name == "com.whatsapp.w4b"
+    assert w4b_d.display_name == "WhatsApp Business (Dual Xiaomi)"
+    assert w4b_d.latest_backup_file == "msgstore.db.crypt15"
+    assert w4b_d.is_dual is True
+
