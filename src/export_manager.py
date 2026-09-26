@@ -152,15 +152,24 @@ class ExportManager:
             )
 
     @classmethod
+    def get_account_export_dir(
+        cls, account_id: str = "principal", base_dir: Path | None = None
+    ) -> Path:
+        """Resolve isolated export directory for a specific account."""
+        root = base_dir or AppConfig.EXPORTS_DIR
+        return root / account_id
+
+    @classmethod
     def export_all(
         cls,
         conversations: list[Conversation],
         messages: list[Message],
         manifest: ExportManifest,
         output_dir: Path | None = None,
+        account_id: str = "principal",
     ) -> list[Path]:
         """Export all_messages.csv, conversations.csv, individual conversation CSVs, and manifest.json."""
-        out_dir = output_dir or AppConfig.EXPORTS_DIR
+        out_dir = output_dir or cls.get_account_export_dir(account_id)
         conv_dir = out_dir / "conversations"
         out_dir.mkdir(parents=True, exist_ok=True)
         conv_dir.mkdir(parents=True, exist_ok=True)
@@ -199,6 +208,7 @@ class ExportManager:
         manifest.files_generated = [p.name for p in files_written]
         manifest.total_conversations = len(conversations)
         manifest.total_messages = len(messages)
+        manifest.account_id = account_id
 
         try:
             with open(temp_manifest, "w", encoding="utf-8") as f:
@@ -213,6 +223,6 @@ class ExportManager:
             raise ExportFailedError(reason=f"Fallo al escribir el archivo manifest.json: {e}")
 
         logger.info(
-            f"Export completed: {len(files_written)} files written to {out_dir} (all_messages.csv, conversations.csv, individual CSVs, manifest.json)."
+            f"Export completed for account '{account_id}': {len(files_written)} files written to {out_dir}."
         )
         return files_written

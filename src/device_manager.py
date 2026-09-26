@@ -16,7 +16,7 @@ from src.errors import (
     DeviceUnauthorizedError,
     MultipleDevicesError,
 )
-from src.models import DeviceInfo, RemoteBackupInfo
+from src.models import DeviceInfo, RemoteBackupInfo, WhatsAppAccount
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +89,17 @@ class DeviceManager:
         if ver_res.returncode == 0:
             dev.android_version = ver_res.stdout.strip()
 
-        # 3. WhatsApp packages
-        pkg_res = self.run_adb(["-s", dev.serial, "shell", "pm", "list", "packages"])
-        if pkg_res.returncode == 0:
-            installed = []
-            for pkg in AppConfig.REMOTE_WHATSAPP_PACKAGES:
-                if f"package:{pkg}" in pkg_res.stdout:
-                    installed.append(pkg)
-            dev.whatsapp_packages = installed
+        # 3. WhatsApp packages across user profiles
+        installed = set()
+        for user_id in (0, 999, 10):
+            pkg_res = self.run_adb(
+                ["-s", dev.serial, "shell", f"pm list packages --user {user_id}"]
+            )
+            if pkg_res.returncode == 0:
+                for pkg in AppConfig.REMOTE_WHATSAPP_PACKAGES:
+                    if f"package:{pkg}" in pkg_res.stdout:
+                        installed.add(pkg)
+        dev.whatsapp_packages = sorted(list(installed))
 
     def get_active_device(self, serial: str | None = None) -> DeviceInfo:
         """Get the target authorized device or raise an appropriate structured error."""
@@ -127,70 +130,210 @@ class DeviceManager:
 
         return dev
 
-    def list_backups(self, serial: str) -> list[RemoteBackupInfo]:
-        """Discover all WhatsApp backup files on the device."""
-        found: list[RemoteBackupInfo] = []
+    def list_whatsapp_accounts(self, serial: str | None = None) -> list[WhatsAppAccount]:
+        """Discover all distinct WhatsApp account profiles (User 0, Xiaomi Dual App 999, Work Profile, etc.)."""
+        dev = self.get_active_device(serial)
+        accounts: list[WhatsAppAccount] = []
 
+        # 1. Discover Android user IDs
+        user_ids = [0]
+        users_res = self.run_adb(["-s", dev.serial, "shell", "pm", "list", "users"])
+        if users_res.returncode == 0:
+            # Lines like: UserInfo{0:Propietario:c13} running, UserInfo{999:XSpace:801010} running
+            for match in re.finditer(r"UserInfo\{(\d+):([^:]+):", users_res.stdout):
+                uid = int(match.group(1))
+                if uid not in user_ids:
+                    user_ids.append(uid)
+
+        # Fallback check for Xiaomi Dual User 999 if not listed
+        if 999 not in user_ids:
+            check_999 = self.run_adb(["-s", dev.serial, "shell", "ls /storage/emulated/999/"])
+            if check_999.returncode == 0:
+                user_ids.append(999)
+
+        # 2. Check candidate directories for each user profile and package
+        seen_dirs = set()
+        for uid in user_ids:
+            for pkg in AppConfig.REMOTE_WHATSAPP_PACKAGES:
+                is_business = pkg == "com.whatsapp.w4b"
+                subfolder = "WhatsApp Business" if is_business else "WhatsApp"
+
+                candidate_dirs = [
+                    f"/storage/emulated/{uid}/Android/media/{pkg}/{subfolder}/Databases/",
+                    f"/storage/emulated/{uid}/{subfolder}/Databases/",
+                ]
+                if uid == 0:
+                    candidate_dirs.append(f"/sdcard/Android/media/{pkg}/{subfolder}/Databases/")
+                    candidate_dirs.append(f"/sdcard/{subfolder}/Databases/")
+
+                for cdir in candidate_dirs:
+                    if cdir in seen_dirs:
+                        continue
+
+                    res = self.run_adb(["-s", dev.serial, "shell", f"ls -la '{cdir}' 2>/dev/null"])
+                    if res.returncode == 0 and res.stdout.strip():
+                        # Parse files in this backup directory
+                        backups = self._parse_ls_output(res.stdout, cdir)
+                        if backups:
+                            seen_dirs.add(cdir)
+                            latest = backups[0]
+
+                            # Determine account ID and display name
+                            is_dual = uid == 999
+                            if uid == 0 and not is_business:
+                                account_id = "principal"
+                                display_name = "WhatsApp (Principal - Usuario 0)"
+                            elif uid == 999 and not is_business:
+                                account_id = "dual_xiaomi"
+                                display_name = "WhatsApp (Dual Xiaomi - Usuario 999)"
+                            elif uid == 0 and is_business:
+                                account_id = "business_principal"
+                                display_name = "WhatsApp Business (Principal)"
+                            elif uid == 999 and is_business:
+                                account_id = "business_dual"
+                                display_name = "WhatsApp Business (Dual Xiaomi)"
+                            else:
+                                account_id = f"user_{uid}_{pkg.replace('.', '_')}"
+                                display_name = (
+                                    f"WhatsApp {'Business ' if is_business else ''}(Usuario {uid})"
+                                )
+
+                            acc = WhatsAppAccount(
+                                account_id=account_id,
+                                display_name=display_name,
+                                android_user_id=uid,
+                                package_name=pkg,
+                                remote_db_dir=cdir,
+                                latest_backup_file=latest.filename,
+                                latest_backup_size_mb=round(latest.file_size / (1024 * 1024), 2),
+                                latest_backup_date=latest.modified_at,
+                                crypt_format=latest.format,
+                                is_dual=is_dual,
+                            )
+                            # Avoid duplicates by account_id
+                            if not any(a.account_id == acc.account_id for a in accounts):
+                                accounts.append(acc)
+                            break
+
+        return accounts
+
+    def get_account(
+        self,
+        serial: str | None = None,
+        account_id: str = "principal",
+    ) -> WhatsAppAccount:
+        """Get a specific WhatsApp account profile by account_id, or raise BackupNotFoundError."""
+        accounts = self.list_whatsapp_accounts(serial)
+        for acc in accounts:
+            if acc.account_id == account_id:
+                return acc
+
+        # Fallback match on prefix or first account if default requested
+        if account_id == "principal" and accounts:
+            return accounts[0]
+
+        raise BackupNotFoundError(
+            searched_paths=[a.remote_db_dir for a in accounts]
+            or list(AppConfig.REMOTE_BACKUP_DIRS)
+        )
+
+    def _parse_ls_output(self, ls_stdout: str, base_dir: str) -> list[RemoteBackupInfo]:
+        """Parse ls -la output to extract RemoteBackupInfo records."""
+        found: list[RemoteBackupInfo] = []
+        for line in ls_stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("total", "d")):
+                continue
+
+            match = re.search(r"(msgstore[^\s]*\.db\.crypt(\d+))", line)
+            if not match:
+                continue
+
+            filename = match.group(1)
+            crypt_num = match.group(2)
+            remote_path = f"{base_dir.rstrip('/')}/{filename}"
+
+            parts = line.split()
+            file_size = 0
+            mod_date = ""
+
+            try:
+                for i, p in enumerate(parts):
+                    if p == filename:
+                        if i >= 3:
+                            file_size = int(parts[i - 3])
+                            mod_date = f"{parts[i - 2]} {parts[i - 1]}"
+                        break
+            except (ValueError, IndexError):
+                pass
+
+            is_main = filename in (
+                f"msgstore.db.crypt{crypt_num}",
+                "msgstore.db.crypt15",
+                "msgstore.db.crypt14",
+                "msgstore.db.crypt12",
+            )
+
+            found.append(
+                RemoteBackupInfo(
+                    remote_path=remote_path,
+                    filename=filename,
+                    file_size=file_size,
+                    modified_at=mod_date,
+                    format=f"crypt{crypt_num}",
+                    is_main=is_main,
+                )
+            )
+
+        found.sort(key=lambda b: (1 if b.is_main else 0, b.modified_at, b.filename), reverse=True)
+        return found
+
+    def list_backups(
+        self, serial: str, account_id: str | None = None
+    ) -> list[RemoteBackupInfo]:
+        """Discover all WhatsApp backup files on the device (optionally filtered by account)."""
+        if account_id:
+            try:
+                acc = self.get_account(serial, account_id)
+                res = self.run_adb(
+                    ["-s", serial, "shell", f"ls -la '{acc.remote_db_dir}' 2>/dev/null"]
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    backups = self._parse_ls_output(res.stdout, acc.remote_db_dir)
+                    if backups:
+                        return backups
+            except Exception as e:
+                logger.warning(f"Error listing backups for account {account_id}: {e}")
+
+        found: list[RemoteBackupInfo] = []
         for base_dir in AppConfig.REMOTE_BACKUP_DIRS:
-            # Use 'ls -la' or 'ls -l' to inspect directory
             res = self.run_adb(["-s", serial, "shell", f"ls -la '{base_dir}' 2>/dev/null"])
             if res.returncode != 0 or not res.stdout.strip():
                 continue
 
-            for line in res.stdout.splitlines():
-                line = line.strip()
-                if not line or line.startswith(("total", "d")):
-                    continue
-
-                # Match files like msgstore.db.crypt15, msgstore-2026-09-22.1.db.crypt14, msgstore.db.crypt14
-                match = re.search(r"(msgstore[^\s]*\.db\.crypt(\d+))", line)
-                if not match:
-                    continue
-
-                filename = match.group(1)
-                crypt_num = match.group(2)
-                remote_path = f"{base_dir.rstrip('/')}/{filename}"
-
-                # Extract file size and date if available
-                parts = line.split()
-                file_size = 0
-                mod_date = ""
-
-                # Example ls line: -rw-rw---- 1 u0_a254 everybody 5914043 2026-09-22 02:00 msgstore.db.crypt14
-                try:
-                    for i, p in enumerate(parts):
-                        if p == filename:
-                            if i >= 3:
-                                file_size = int(parts[i - 3])
-                                mod_date = f"{parts[i - 2]} {parts[i - 1]}"
-                            break
-                except (ValueError, IndexError):
-                    pass
-
-                is_main = filename in (
-                    f"msgstore.db.crypt{crypt_num}",
-                    "msgstore.db.crypt15",
-                    "msgstore.db.crypt14",
-                    "msgstore.db.crypt12",
-                )
-
-                found.append(
-                    RemoteBackupInfo(
-                        remote_path=remote_path,
-                        filename=filename,
-                        file_size=file_size,
-                        modified_at=mod_date,
-                        format=f"crypt{crypt_num}",
-                        is_main=is_main,
-                    )
-                )
+            parsed = self._parse_ls_output(res.stdout, base_dir)
+            found.extend(parsed)
 
         if not found:
             raise BackupNotFoundError(searched_paths=list(AppConfig.REMOTE_BACKUP_DIRS))
 
-        # Sort: main backups first (msgstore.db.crypt*), then descending modification date
-        found.sort(key=lambda b: (1 if b.is_main else 0, b.modified_at, b.filename), reverse=True)
-        return found
+        # Deduplicate and sort
+        seen = set()
+        deduped = []
+        for b in found:
+            if b.remote_path not in seen:
+                seen.add(b.remote_path)
+                deduped.append(b)
+
+        deduped.sort(key=lambda b: (1 if b.is_main else 0, b.modified_at, b.filename), reverse=True)
+        return deduped
+
+    def find_latest_backup(
+        self, serial: str, account_id: str | None = None
+    ) -> RemoteBackupInfo:
+        """Find the latest primary backup for an account or default."""
+        backups = self.list_backups(serial, account_id=account_id)
+        return backups[0]
 
     def pull_backup(
         self,

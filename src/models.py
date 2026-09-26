@@ -49,6 +49,22 @@ class BackupMetadata:
 
 
 @dataclass
+class WhatsAppAccount:
+    """Represents a distinct WhatsApp account profile on the Android device."""
+
+    account_id: str  # "principal", "dual_xiaomi", "business_principal", "business_dual", "work_profile_10"
+    display_name: str  # "WhatsApp (Principal)", "WhatsApp (Dual Xiaomi)"
+    android_user_id: int  # 0, 999, 10, etc.
+    package_name: str  # "com.whatsapp", "com.whatsapp.w4b"
+    remote_db_dir: str
+    latest_backup_file: str | None = None
+    latest_backup_size_mb: float = 0.0
+    latest_backup_date: str | None = None
+    crypt_format: str = "unknown"  # "crypt15", "crypt14", "crypt12", "unknown"
+    is_dual: bool = False
+
+
+@dataclass
 class Conversation:
     """Representation of a WhatsApp chat/conversation."""
 
@@ -56,6 +72,7 @@ class Conversation:
     conversation_name: str
     conversation_type: str  # "individual", "group", "broadcast", "system"
     original_jid: str
+    account_id: str = "principal"
     last_message_at: str | None = None
     message_count: int = 0
 
@@ -72,6 +89,7 @@ class Message:
     timestamp_utc: str  # ISO-8601 UTC
     timestamp_local: str  # ISO-8601 Local
     message_type: str  # "text", "image", "audio", "video", "document", "location", "sticker", "call", "system", "unknown"
+    account_id: str = "principal"
     text: str | None = None
     media_path: str | None = None
     media_mime: str | None = None
@@ -91,6 +109,7 @@ class ExportRun:
 
     run_id: str
     started_at: str
+    account_id: str = "principal"
     finished_at: str | None = None
     status: str = "started"  # "started", "completed", "failed"
     backup_id: str | None = None
@@ -114,11 +133,13 @@ class ExportManifest:
     total_messages: int
     files_generated: list[str]
     tool_versions: dict[str, str]
+    account_id: str = "principal"
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "run_id": self.run_id,
+            "account_id": self.account_id,
             "exported_at": self.exported_at,
             "backup_file": self.backup_file,
             "backup_sha256": self.backup_sha256,

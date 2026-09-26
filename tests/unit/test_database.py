@@ -120,3 +120,49 @@ def test_vault_incremental_update(tmp_path: Path):
     m1_stored = [m for m in all_msgs if m.message_uid == "UID_001"][0]
     assert m1_stored.text == "Edited text"
     assert m1_stored.edited is True
+
+
+def test_vault_multi_account_isolation(tmp_path: Path):
+    """Test that messages and conversations belonging to different accounts are isolated."""
+    db_file = tmp_path / "test_vault_multi.db"
+    vault = VaultDatabase(db_file)
+
+    # Principal account message
+    m_principal = Message(
+        message_uid="UID_P01",
+        conversation_id="conv_work",
+        sender_id="boss",
+        sender_name="Boss",
+        direction="incoming",
+        timestamp_utc="2026-09-25T10:00:00Z",
+        timestamp_local="2026-09-25T10:00:00Z",
+        message_type="text",
+        text="Work message",
+        source_backup_id="bk_p",
+    )
+    vault.consolidate_messages([m_principal], "bk_p", account_id="principal")
+
+    # Dual Xiaomi account message with same conversation_id name
+    m_dual = Message(
+        message_uid="UID_D01",
+        conversation_id="conv_personal",
+        sender_id="friend",
+        sender_name="Friend",
+        direction="incoming",
+        timestamp_utc="2026-09-25T11:00:00Z",
+        timestamp_local="2026-09-25T11:00:00Z",
+        message_type="text",
+        text="Personal dual message",
+        source_backup_id="bk_d",
+    )
+    vault.consolidate_messages([m_dual], "bk_d", account_id="dual_xiaomi")
+
+    # Verify filtered queries
+    principal_msgs = vault.get_all_messages(account_id="principal")
+    assert len(principal_msgs) == 1
+    assert principal_msgs[0].text == "Work message"
+
+    dual_msgs = vault.get_all_messages(account_id="dual_xiaomi")
+    assert len(dual_msgs) == 1
+    assert dual_msgs[0].text == "Personal dual message"
+

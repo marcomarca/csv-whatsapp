@@ -74,47 +74,61 @@ class AppUI(tk.Tk):
         )
         sub_lbl.pack(anchor=tk.W, pady=(2, 0))
 
+        self.selected_account_id = "principal"
+        self.detected_accounts: list = []
+
         # Status Box
         status_frame = ttk.LabelFrame(
-            self, text=" Estado del Teléfono y Sistema ", padding=12, style="Section.TLabelframe"
+            self, text=" Cuenta y Estado del Teléfono ", padding=12, style="Section.TLabelframe"
         )
         status_frame.pack(fill=tk.X, padx=15, pady=8)
 
-        # Status Grid
-        ttk.Label(status_frame, text="Dispositivo Android:", font=("Helvetica", 9, "bold")).grid(
-            row=0, column=0, sticky=tk.W, pady=3
+        # Account Selector Row
+        acc_row = ttk.Frame(status_frame)
+        acc_row.grid(row=0, column=0, columnspan=4, sticky=tk.EW, pady=(0, 8))
+
+        ttk.Label(acc_row, text="Cuenta de WhatsApp:", font=("Helvetica", 9, "bold")).pack(
+            side=tk.LEFT, padx=(0, 8)
         )
-        self.lbl_device = ttk.Label(status_frame, text="Comprobando...", style="BadgeWarn.TLabel")
-        self.lbl_device.grid(row=0, column=1, sticky=tk.W, padx=10, pady=3)
-
-        ttk.Label(status_frame, text="Autorización ADB:", font=("Helvetica", 9, "bold")).grid(
-            row=0, column=2, sticky=tk.W, pady=3, padx=(20, 0)
-        )
-        self.lbl_adb = ttk.Label(status_frame, text="Comprobando...", style="BadgeWarn.TLabel")
-        self.lbl_adb.grid(row=0, column=3, sticky=tk.W, padx=10, pady=3)
-
-        ttk.Label(
-            status_frame, text="Clave de Cifrado (OS Keyring):", font=("Helvetica", 9, "bold")
-        ).grid(row=1, column=0, sticky=tk.W, pady=3)
-        self.lbl_key = ttk.Label(status_frame, text="Comprobando...", style="BadgeWarn.TLabel")
-        self.lbl_key.grid(row=1, column=1, sticky=tk.W, padx=10, pady=3)
-
-        ttk.Label(
-            status_frame, text="Último Backup Detectado:", font=("Helvetica", 9, "bold")
-        ).grid(row=1, column=2, sticky=tk.W, pady=3, padx=(20, 0))
-        self.lbl_backup = ttk.Label(status_frame, text="Buscando...")
-        self.lbl_backup.grid(row=1, column=3, sticky=tk.W, padx=10, pady=3)
-
-        ttk.Label(status_frame, text="Almacén Local (Total):", font=("Helvetica", 9, "bold")).grid(
-            row=2, column=0, sticky=tk.W, pady=3
-        )
-        self.lbl_vault = ttk.Label(status_frame, text="0 conversaciones | 0 mensajes")
-        self.lbl_vault.grid(row=2, column=1, columnspan=3, sticky=tk.W, padx=10, pady=3)
+        self.cmb_accounts = ttk.Combobox(acc_row, state="readonly", width=42)
+        self.cmb_accounts.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self.cmb_accounts.bind("<<ComboboxSelected>>", self.on_account_selected)
 
         btn_refresh = ttk.Button(
-            status_frame, text="↻ Actualizar Estado", command=self.refresh_status
+            acc_row, text="↻ Buscar Cuentas", command=self.refresh_status
         )
-        btn_refresh.grid(row=3, column=0, columnspan=4, sticky=tk.E, pady=(6, 0))
+        btn_refresh.pack(side=tk.RIGHT)
+
+        # Status Grid
+        ttk.Label(status_frame, text="Dispositivo Android:", font=("Helvetica", 9, "bold")).grid(
+            row=1, column=0, sticky=tk.W, pady=3
+        )
+        self.lbl_device = ttk.Label(status_frame, text="Comprobando...", style="BadgeWarn.TLabel")
+        self.lbl_device.grid(row=1, column=1, sticky=tk.W, padx=10, pady=3)
+
+        ttk.Label(status_frame, text="Autorización ADB:", font=("Helvetica", 9, "bold")).grid(
+            row=1, column=2, sticky=tk.W, pady=3, padx=(20, 0)
+        )
+        self.lbl_adb = ttk.Label(status_frame, text="Comprobando...", style="BadgeWarn.TLabel")
+        self.lbl_adb.grid(row=1, column=3, sticky=tk.W, padx=10, pady=3)
+
+        ttk.Label(
+            status_frame, text="Clave de Cifrado (Keyring):", font=("Helvetica", 9, "bold")
+        ).grid(row=2, column=0, sticky=tk.W, pady=3)
+        self.lbl_key = ttk.Label(status_frame, text="Comprobando...", style="BadgeWarn.TLabel")
+        self.lbl_key.grid(row=2, column=1, sticky=tk.W, padx=10, pady=3)
+
+        ttk.Label(
+            status_frame, text="Último Backup de Cuenta:", font=("Helvetica", 9, "bold")
+        ).grid(row=2, column=2, sticky=tk.W, pady=3, padx=(20, 0))
+        self.lbl_backup = ttk.Label(status_frame, text="Buscando...")
+        self.lbl_backup.grid(row=2, column=3, sticky=tk.W, padx=10, pady=3)
+
+        ttk.Label(status_frame, text="Almacén Local (Cuenta):", font=("Helvetica", 9, "bold")).grid(
+            row=3, column=0, sticky=tk.W, pady=3
+        )
+        self.lbl_vault = ttk.Label(status_frame, text="0 conversaciones | 0 mensajes")
+        self.lbl_vault.grid(row=3, column=1, columnspan=3, sticky=tk.W, padx=10, pady=3)
 
         # Action Buttons Center
         action_frame = ttk.Frame(self, padding="15 8")
@@ -187,14 +201,58 @@ class AppUI(tk.Tk):
         self.txt_log.insert(tk.END, f"{msg}\n")
         self.txt_log.see(tk.END)
 
+    def on_account_selected(self, event=None):
+        """Handle user changing account in Combobox."""
+        selected_text = self.cmb_accounts.get()
+        for a in self.detected_accounts:
+            if selected_text.startswith(f"[{a.account_id}]") or selected_text == a.display_name:
+                self.selected_account_id = a.account_id
+                break
+        self._refresh_account_specific_badges()
+
+    def _refresh_account_specific_badges(self):
+        """Update Key, Backup, and Vault status specifically for the selected account."""
+        acc_id = self.selected_account_id
+
+        # Key status
+        has_key = self.secret_manager.has_key(acc_id)
+        if has_key:
+            key_val = self.secret_manager.get_key(acc_id) or ""
+            self.lbl_key.config(
+                text=f"Configurada ({self.secret_manager.mask_key(key_val)})",
+                style="BadgeOK.TLabel",
+            )
+        else:
+            self.lbl_key.config(
+                text=f"Sin clave (Capturar para '{acc_id}')", style="BadgeWarn.TLabel"
+            )
+
+        # Backup status
+        target_acc = next((a for a in self.detected_accounts if a.account_id == acc_id), None)
+        if target_acc and target_acc.latest_backup_file:
+            self.lbl_backup.config(
+                text=f"{target_acc.latest_backup_file} ({target_acc.latest_backup_size_mb} MB, {target_acc.crypt_format})"
+            )
+        else:
+            self.lbl_backup.config(text="Sin copias de seguridad encontradas")
+
+        # Vault status for this account
+        convs = self.vault_db.get_all_conversations(account_id=acc_id)
+        msgs = self.vault_db.get_all_messages(account_id=acc_id)
+        self.lbl_vault.config(
+            text=f"{len(convs)} conversaciones | {len(msgs)} mensajes en '{acc_id}'"
+        )
+
     def refresh_status(self):
-        """Query ADB, Keyring, and Vault to refresh status badges."""
+        """Query ADB, Keyring, and Vault to refresh status badges and account list."""
         try:
             devices = self.device_manager.get_devices()
             if not devices:
                 self.lbl_device.config(text="No detectado", style="BadgeErr.TLabel")
                 self.lbl_adb.config(text="Desconectado", style="BadgeErr.TLabel")
                 self.lbl_backup.config(text="Desconocido")
+                self.cmb_accounts["values"] = ["principal"]
+                self.cmb_accounts.set("principal")
             else:
                 dev = devices[0]
                 if dev.is_authorized:
@@ -203,64 +261,67 @@ class AppUI(tk.Tk):
                         style="BadgeOK.TLabel",
                     )
                     self.lbl_adb.config(text="Autorizado", style="BadgeOK.TLabel")
-                    # Try finding backup
+
+                    # Discover WhatsApp Accounts
                     try:
-                        backups = self.device_manager.list_backups(dev.serial)
-                        main_b = backups[0]
-                        self.lbl_backup.config(text=f"{main_b.filename} ({main_b.modified_at})")
-                    except Exception:
-                        self.lbl_backup.config(text="Sin copias encontradas")
+                        self.detected_accounts = self.device_manager.list_whatsapp_accounts(dev.serial)
+                        if self.detected_accounts:
+                            acc_entries = [
+                                f"[{a.account_id}] {a.display_name} ({a.crypt_format})"
+                                for a in self.detected_accounts
+                            ]
+                            self.cmb_accounts["values"] = acc_entries
+
+                            # Select current or first
+                            current_match = next(
+                                (
+                                    e
+                                    for e in acc_entries
+                                    if e.startswith(f"[{self.selected_account_id}]")
+                                ),
+                                acc_entries[0],
+                            )
+                            self.cmb_accounts.set(current_match)
+                            # Update selected_account_id
+                            for a in self.detected_accounts:
+                                if current_match.startswith(f"[{a.account_id}]"):
+                                    self.selected_account_id = a.account_id
+                                    break
+                    except Exception as e:
+                        logger.warning(f"Error listing accounts: {e}")
                 else:
                     self.lbl_device.config(text=f"{dev.serial}", style="BadgeWarn.TLabel")
                     self.lbl_adb.config(
                         text=f"No Autorizado ({dev.state})", style="BadgeWarn.TLabel"
                     )
-                    self.lbl_backup.config(text="Esperando autorización")
 
         except Exception as e:
             self.lbl_device.config(text="Error ADB", style="BadgeErr.TLabel")
             self.lbl_adb.config(text=str(e)[:30], style="BadgeErr.TLabel")
 
-        # Key status
-        has_key = self.secret_manager.has_key("default")
-        if has_key:
-            key_val = self.secret_manager.get_key("default") or ""
-            self.lbl_key.config(
-                text=f"Configurada ({self.secret_manager.mask_key(key_val)})",
-                style="BadgeOK.TLabel",
-            )
-        else:
-            self.lbl_key.config(
-                text="No configurada (Introduce la clave de 64 hex)", style="BadgeWarn.TLabel"
-            )
-
-        # Vault status
-        convs = self.vault_db.get_all_conversations()
-        msgs = self.vault_db.get_all_messages()
-        self.lbl_vault.config(
-            text=f"{len(convs)} conversaciones | {len(msgs)} mensajes almacenados"
-        )
+        self._refresh_account_specific_badges()
 
     def open_ocr_dialog(self):
-        """Open the interactive screen cropping and OCR dialog."""
+        """Open the interactive screen cropping and OCR dialog for the selected account."""
         CaptureKeyDialog(
             parent=self,
+            account_id=self.selected_account_id,
             on_key_saved=lambda key: self.refresh_status(),
         )
 
     def prompt_set_key(self):
-        """Prompt user for 64-character hex key and store it securely."""
+        """Prompt user for 64-character hex key and store it securely for selected account."""
         key = simpledialog.askstring(
-            "Configurar Clave de Cifrado",
-            "Introduce la clave de cifrado de extremo a extremo de WhatsApp\n(64 caracteres hexadecimales generados por WhatsApp):",
+            f"Configurar Clave ({self.selected_account_id})",
+            f"Introduce la clave de cifrado de 64 caracteres para la cuenta '{self.selected_account_id}':",
             parent=self,
         )
         if key:
             try:
-                self.secret_manager.store_key(key, "default")
+                self.secret_manager.store_key(key, self.selected_account_id)
                 messagebox.showinfo(
                     "Clave Guardada",
-                    "La clave se ha validado y guardado de forma segura en el almacén del sistema operativo.",
+                    f"La clave se ha validado y guardado de forma segura para la cuenta '{self.selected_account_id}'.",
                     parent=self,
                 )
                 self.refresh_status()
@@ -278,14 +339,17 @@ class AppUI(tk.Tk):
             "3. En Android: Abre Ajustes > Información del teléfono y pulsa 7 veces 'Número de compilación'.\n"
             "4. Regresa a Ajustes > Opciones de desarrollador > Activa 'Depuración por USB'.\n"
             "5. En la pantalla del teléfono aparecerá: '¿Permitir depuración por USB desde este equipo?'. Acepta la solicitud.\n"
-            "6. En WhatsApp: Ajustes > Chats > Copia de seguridad > Copia de seguridad cifrada de extremo a extremo > Guardar clave de 64 dígitos y pulsa 'Guardar' para crear el backup."
+            "6. En WhatsApp (Principal o Dual): Ajustes > Chats > Copia de seguridad > Copia de seguridad cifrada de extremo a extremo > Guardar clave de 64 dígitos y pulsa 'Guardar' para crear el backup."
         )
         messagebox.showinfo("Guía de Conexión USB y WhatsApp", guide_msg, parent=self)
 
     def open_exports_folder(self):
-        """Open the data/exports folder in Windows Explorer or OS file manager."""
+        """Open the data/exports/<account_id> folder in Windows Explorer or OS file manager."""
         AppConfig.ensure_directories()
-        path = str(AppConfig.EXPORTS_DIR.resolve())
+        from src.export_manager import ExportManager
+        target_dir = ExportManager.get_account_export_dir(self.selected_account_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = str(target_dir.resolve())
         if sys.platform == "win32":
             os.startfile(path)
         elif sys.platform == "darwin":
@@ -307,27 +371,29 @@ class AppUI(tk.Tk):
             )
 
     def show_history(self):
-        """Show dialog with export history."""
-        runs = self.vault_db.get_export_runs(limit=30)
+        """Show dialog with export history for current account."""
+        runs = self.vault_db.get_export_runs(limit=30, account_id=self.selected_account_id)
         hist_win = tk.Toplevel(self)
-        hist_win.title("Historial de Exportaciones")
-        hist_win.geometry("640x350")
+        hist_win.title(f"Historial de Exportaciones - Cuenta: {self.selected_account_id}")
+        hist_win.geometry("680x350")
 
-        cols = ("fecha", "estado", "chats", "mensajes", "nuevos", "id")
+        cols = ("fecha", "cuenta", "estado", "chats", "mensajes", "nuevos", "id")
         tree = ttk.Treeview(hist_win, columns=cols, show="headings")
         tree.heading("fecha", text="Fecha")
+        tree.heading("cuenta", text="Cuenta")
         tree.heading("estado", text="Estado")
         tree.heading("chats", text="Chats")
         tree.heading("mensajes", text="Mensajes")
         tree.heading("nuevos", text="Nuevos")
         tree.heading("id", text="ID Ejecución")
 
-        tree.column("fecha", width=140)
-        tree.column("estado", width=80)
-        tree.column("chats", width=60)
-        tree.column("mensajes", width=70)
-        tree.column("nuevos", width=60)
-        tree.column("id", width=180)
+        tree.column("fecha", width=130)
+        tree.column("cuenta", width=90)
+        tree.column("estado", width=75)
+        tree.column("chats", width=55)
+        tree.column("mensajes", width=65)
+        tree.column("nuevos", width=55)
+        tree.column("id", width=160)
 
         for r in runs:
             dt_str = r.started_at[:19].replace("T", " ") if r.started_at else "?"
@@ -336,6 +402,7 @@ class AppUI(tk.Tk):
                 tk.END,
                 values=(
                     dt_str,
+                    r.account_id,
                     r.status,
                     r.total_conversations,
                     r.total_messages,
@@ -350,17 +417,19 @@ class AppUI(tk.Tk):
         """Run export pipeline in a background thread to maintain GUI responsiveness."""
         self.btn_export.config(state=tk.DISABLED)
         self.progress_bar["value"] = 0
-        self.lbl_step.config(text="Iniciando exportación...")
-        self.log_message("--- Iniciando proceso de exportación ---")
+        self.lbl_step.config(text=f"Iniciando exportación de '{self.selected_account_id}'...")
+        self.log_message(f"--- Iniciando proceso de exportación para '{self.selected_account_id}' ---")
 
         threading.Thread(target=self._run_export_worker, daemon=True).start()
 
     def _run_export_worker(self):
+        acc_id = self.selected_account_id
+
         def progress_cb(stage: str, message: str, percent: float):
             self.after(0, lambda: self._update_progress(message, percent))
 
         try:
-            res = self.pipeline.run_export(progress_cb=progress_cb)
+            res = self.pipeline.run_export(account_id=acc_id, progress_cb=progress_cb)
             self.after(0, lambda: self._on_export_success(res))
         except WhatsAppBackupError as e:
             self.after(0, lambda err=e: self._on_export_error(err))
@@ -378,14 +447,15 @@ class AppUI(tk.Tk):
     def _on_export_success(self, res: dict):
         self.progress_bar["value"] = 100
         self.lbl_step.config(text="Exportación completada con éxito.")
-        self.log_message("=== Exportación finalizada correctamente ===")
+        self.log_message(f"=== Exportación de '{res['account_id']}' finalizada correctamente ===")
         msg = (
             f"Exportación realizada con éxito:\n\n"
+            f"• Cuenta: {res['account_display_name']} [{res['account_id']}]\n"
             f"• Dispositivo: {res['device_model']}\n"
             f"• Conversaciones: {res['total_conversations']}\n"
             f"• Mensajes totales: {res['total_messages']}\n"
             f"• Mensajes nuevos: {res['inserted_messages']}\n\n"
-            f"Archivos guardados en data/exports/ (all_messages.csv, conversations.csv y CSVs por chat)."
+            f"Archivos guardados en {res['exports_dir']}/ (all_messages.csv, conversations.csv y CSVs por chat)."
         )
         if messagebox.askyesno(
             "Exportación Exitosa",

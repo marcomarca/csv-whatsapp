@@ -55,8 +55,52 @@ def test_cli_history(capsys, tmp_path: Path, monkeypatch):
         )
     )
 
-    args = argparse.Namespace(command="history", limit=10)
+    args = argparse.Namespace(command="history", limit=10, account=None)
     assert cmd_history(args) == 0
     captured = capsys.readouterr()
     assert "run_hist_1" in captured.out
     assert "120" in captured.out
+
+
+def test_cli_accounts(capsys, monkeypatch):
+    """Test 'accounts' CLI subcommand."""
+    from src.cli import cmd_accounts
+    from src.models import DeviceInfo, WhatsAppAccount
+
+    dev = DeviceInfo(serial="poco123", state="device", model="POCO X3 Pro")
+    monkeypatch.setattr("src.device_manager.DeviceManager.get_active_device", lambda self, s=None: dev)
+
+    mock_accounts = [
+        WhatsAppAccount(
+            account_id="principal",
+            display_name="WhatsApp (Principal - Usuario 0)",
+            android_user_id=0,
+            package_name="com.whatsapp",
+            remote_db_dir="/storage/emulated/0/WhatsApp/Databases/",
+            latest_backup_file="msgstore.db.crypt15",
+            latest_backup_size_mb=5.7,
+            latest_backup_date="2026-09-26 01:00",
+            crypt_format="crypt15",
+        ),
+        WhatsAppAccount(
+            account_id="dual_xiaomi",
+            display_name="WhatsApp (Dual Xiaomi - Usuario 999)",
+            android_user_id=999,
+            package_name="com.whatsapp",
+            remote_db_dir="/storage/emulated/999/WhatsApp/Databases/",
+            latest_backup_file="msgstore.db.crypt14",
+            latest_backup_size_mb=187.8,
+            latest_backup_date="2026-09-25 02:00",
+            crypt_format="crypt14",
+            is_dual=True,
+        ),
+    ]
+    monkeypatch.setattr("src.device_manager.DeviceManager.list_whatsapp_accounts", lambda self, s=None: mock_accounts)
+
+    args = argparse.Namespace(command="accounts", serial=None)
+    assert cmd_accounts(args) == 0
+    captured = capsys.readouterr()
+    assert "principal" in captured.out
+    assert "dual_xiaomi" in captured.out
+    assert "POCO X3 Pro" in captured.out
+

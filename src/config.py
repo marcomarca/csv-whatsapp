@@ -33,14 +33,20 @@ class AppConfig:
     )
 
     REMOTE_BACKUP_DIRS: tuple[str, ...] = (
+        "/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Databases/",
+        "/storage/emulated/0/WhatsApp/Databases/",
+        "/storage/emulated/999/Android/media/com.whatsapp/WhatsApp/Databases/",
+        "/storage/emulated/999/WhatsApp/Databases/",
+        "/storage/emulated/0/Android/media/com.whatsapp.w4b/WhatsApp Business/Databases/",
+        "/storage/emulated/999/Android/media/com.whatsapp.w4b/WhatsApp Business/Databases/",
         "/sdcard/Android/media/com.whatsapp/WhatsApp/Databases/",
         "/sdcard/WhatsApp/Databases/",
-        "/sdcard/Android/media/com.whatsapp.w4b/WhatsApp Business/Databases/",
     )
 
     REMOTE_MEDIA_DIRS: tuple[str, ...] = (
         "/sdcard/Android/media/com.whatsapp/WhatsApp/Media/",
         "/sdcard/WhatsApp/Media/",
+        "/storage/emulated/999/Android/media/com.whatsapp/WhatsApp/Media/",
         "/sdcard/Android/media/com.whatsapp.w4b/WhatsApp Business/Media/",
     )
 

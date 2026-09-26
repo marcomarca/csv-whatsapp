@@ -21,10 +21,12 @@ class CaptureKeyDialog(tk.Toplevel):
         self,
         parent: tk.Tk,
         ocr_manager: OCRManager | None = None,
+        account_id: str = "principal",
         on_key_saved: Callable[[str], None] | None = None,
     ):
         super().__init__(parent)
-        self.title("Captura OCR de Clave de WhatsApp (64 dígitos)")
+        self.account_id = account_id
+        self.title(f"Captura OCR de Clave (64 dígitos) - Cuenta: {self.account_id}")
         self.geometry("860x720")
         self.minsize(740, 600)
         self.transient(parent)
@@ -49,10 +51,10 @@ class CaptureKeyDialog(tk.Toplevel):
 
         # Normalized ROI (0.0 to 1.0)
         self.current_roi = self.ocr_manager.get_saved_roi() or {
-            "x_min": 0.08,
-            "y_min": 0.35,
-            "x_max": 0.92,
-            "y_max": 0.65,
+            "x_min": 0.107,
+            "y_min": 0.318,
+            "x_max": 0.897,
+            "y_max": 0.466,
         }
 
         self._build_ui()
@@ -64,9 +66,10 @@ class CaptureKeyDialog(tk.Toplevel):
         top_frame.pack(fill=tk.X)
 
         instructions = (
+            f"Cuenta seleccionada: [{self.account_id.upper()}]\n"
             "1. En tu teléfono, abre WhatsApp > Copia de seguridad cifrada y muestra la clave de 64 dígitos.\n"
-            "2. Pulsa '📷 Capturar Pantalla' y arrastra el ratón sobre la imagen para delimitar el área de la clave.\n"
-            "3. Pulsa '🔍 Extraer Clave (OCR)' para leerla y guardarla automáticamente."
+            "2. Pulsa '📷 Capturar Pantalla' y delimita con el ratón el área de la clave (o usa la detectada).\n"
+            "3. Pulsa '🔍 EXTRAER CLAVE (OCR)' para verificarla y guardarla en el almacén seguro."
         )
         ttk.Label(top_frame, text=instructions, font=("Helvetica", 9), justify=tk.LEFT).pack(
             side=tk.LEFT, padx=5
@@ -300,10 +303,10 @@ class CaptureKeyDialog(tk.Toplevel):
             return
 
         try:
-            self.secret_manager.store_key(self.detected_key_clean, "default")
+            self.secret_manager.store_key(self.detected_key_clean, self.account_id)
             messagebox.showinfo(
                 "Clave Guardada",
-                "La clave se ha validado y almacenado de forma segura en el almacén de credenciales del sistema operativo.",
+                f"La clave se ha validado y almacenado de forma segura en el almacén de credenciales para la cuenta '{self.account_id}'.",
                 parent=self,
             )
             if self.on_key_saved:

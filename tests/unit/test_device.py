@@ -34,7 +34,7 @@ def test_device_discovery_parsing(monkeypatch):
             return subprocess.CompletedProcess(args, 0, stdout="POCO X3 Pro\n", stderr="")
         if "getprop" in args and "ro.build.version.release" in args:
             return subprocess.CompletedProcess(args, 0, stdout="12\n", stderr="")
-        if "pm" in args:
+        if any("pm" in str(arg) for arg in args):
             return subprocess.CompletedProcess(args, 0, stdout="package:com.whatsapp\n", stderr="")
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
@@ -104,7 +104,7 @@ def test_list_remote_backups_parsing(monkeypatch):
     )
 
     def mock_run(args, timeout=60):
-        if "com.whatsapp/WhatsApp/Databases" in args[3]:
+        if len(args) > 3 and "/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Databases" in args[3]:
             return subprocess.CompletedProcess(args, 0, stdout=mock_ls, stderr="")
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
 
@@ -131,3 +131,45 @@ def test_pull_backup_failure_raises_error(monkeypatch, tmp_path: Path):
     with pytest.raises(BackupCopyFailedError) as exc_info:
         dev_mgr.pull_backup("serial", "/sdcard/msgstore.db.crypt15", tmp_path)
     assert exc_info.value.code == "BACKUP_COPY_FAILED"
+
+
+def test_list_whatsapp_accounts_dual_apps(monkeypatch):
+    """Test discovering multiple WhatsApp accounts (Principal and Xiaomi Dual App)."""
+    dev_mgr = DeviceManager(adb_path="mock_adb")
+    monkeypatch.setattr(
+        dev_mgr,
+        "get_devices",
+        lambda: [DeviceInfo(serial="poco123", state="device", model="POCO X3 Pro")],
+    )
+
+    mock_pm_users = "Users:\n\tUserInfo{0:Propietario:c13} running\n\tUserInfo{999:XSpace:801010} running\n"
+    mock_ls_u0 = "total 5000\n-rw-rw---- 1 u0_a254 everybody 5900000 2026-09-26 01:00 msgstore.db.crypt15\n"
+    mock_ls_u999 = "total 190000\n-rw-rw---- 1 u999_a254 everybody 195000000 2026-09-25 02:00 msgstore.db.crypt14\n"
+
+    def mock_run(args, timeout=60):
+        cmd_str = " ".join(args)
+        if "pm list users" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_pm_users, stderr="")
+        if "0/Android/media/com.whatsapp/WhatsApp/Databases" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_ls_u0, stderr="")
+        if "999/Android/media/com.whatsapp/WhatsApp/Databases" in cmd_str:
+            return subprocess.CompletedProcess(args, 0, stdout=mock_ls_u999, stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(dev_mgr, "run_adb", mock_run)
+
+    accounts = dev_mgr.list_whatsapp_accounts("poco123")
+    assert len(accounts) == 2
+
+    acc0 = next(a for a in accounts if a.account_id == "principal")
+    assert acc0.android_user_id == 0
+    assert acc0.crypt_format == "crypt15"
+    assert acc0.latest_backup_file == "msgstore.db.crypt15"
+    assert acc0.is_dual is False
+
+    acc999 = next(a for a in accounts if a.account_id == "dual_xiaomi")
+    assert acc999.android_user_id == 999
+    assert acc999.crypt_format == "crypt14"
+    assert acc999.latest_backup_file == "msgstore.db.crypt14"
+    assert acc999.is_dual is True
+

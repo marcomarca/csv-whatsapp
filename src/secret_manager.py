@@ -70,12 +70,19 @@ class SecretManager:
 
         return data
 
-    def store_key(self, key_hex: str, account_id: str = "default") -> None:
+    def _normalize_account_id(self, account_id: str | None) -> str:
+        """Normalize account ID, mapping None or 'default' to 'principal'."""
+        if not account_id or account_id == "default":
+            return "principal"
+        return account_id.strip().lower()
+
+    def store_key(self, key_hex: str, account_id: str = "principal") -> None:
         """Store the validated hex key in the OS secure vault."""
         valid_hex = self.validate_hex_key(key_hex)
+        target_account = self._normalize_account_id(account_id)
         try:
-            keyring.set_password(self.service_name, account_id, valid_hex)
-            logger.info(f"Encryption key stored securely for account '{account_id}'.")
+            keyring.set_password(self.service_name, target_account, valid_hex)
+            logger.info(f"Encryption key stored securely for account '{target_account}'.")
         except Exception as e:
             logger.error(f"Failed to access OS keyring: {e}")
             raise InvalidKeyError(
@@ -83,31 +90,53 @@ class SecretManager:
                 action_recommended="Permite el acceso al almacén de credenciales del sistema o introduce la clave por parámetro.",
             )
 
-    def get_key(self, account_id: str = "default") -> str | None:
+    def get_key(self, account_id: str = "principal") -> str | None:
         """Retrieve the encryption key from the OS secure vault."""
+        target_account = self._normalize_account_id(account_id)
         try:
-            key = keyring.get_password(self.service_name, account_id)
+            key = keyring.get_password(self.service_name, target_account)
             if key:
                 return self.sanitize_key(key)
+            # Backwards compatibility check for legacy 'default'
+            if target_account == "principal":
+                legacy_key = keyring.get_password(self.service_name, "default")
+                if legacy_key:
+                    return self.sanitize_key(legacy_key)
             return None
         except Exception as e:
             logger.warning(f"Could not read from OS keyring: {e}")
             return None
 
-    def has_key(self, account_id: str = "default") -> bool:
+    def has_key(self, account_id: str = "principal") -> bool:
         """Check if an encryption key exists in the OS secure vault."""
         k = self.get_key(account_id)
         return bool(k and len(k) == 64)
 
-    def delete_key(self, account_id: str = "default") -> bool:
+    def delete_key(self, account_id: str = "principal") -> bool:
         """Delete the stored encryption key from the OS secure vault."""
+        target_account = self._normalize_account_id(account_id)
         try:
-            keyring.delete_password(self.service_name, account_id)
-            logger.info(f"Encryption key deleted for account '{account_id}'.")
+            keyring.delete_password(self.service_name, target_account)
+            logger.info(f"Encryption key deleted for account '{target_account}'.")
             return True
         except Exception as e:
             logger.warning(f"Could not delete password from keyring: {e}")
             return False
+
+    def list_stored_accounts(self) -> list[str]:
+        """List known account IDs that have stored keys in keyring."""
+        candidates = [
+            "principal",
+            "dual_xiaomi",
+            "business_principal",
+            "business_dual",
+            "default",
+        ]
+        stored = []
+        for acc in candidates:
+            if self.has_key(acc) and acc not in stored:
+                stored.append(acc)
+        return stored
 
     @staticmethod
     def mask_key(raw_key: str) -> str:

@@ -46,12 +46,13 @@ class ExportPipeline:
         self,
         key: str | None = None,
         serial: str | None = None,
+        account_id: str = "principal",
         force: bool = False,
         include_media: bool = False,
         output_dir: Path | None = None,
         progress_cb: ProgressCallback | None = None,
     ) -> dict:
-        """Run complete automated pipeline from Android USB to CSV."""
+        """Run complete automated pipeline from Android USB to CSV for a specific account."""
         AppConfig.ensure_directories()
         run_id = f"run_{datetime.datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         started_at = datetime.datetime.now(datetime.UTC).isoformat()
@@ -65,9 +66,10 @@ class ExportPipeline:
         run_record = ExportRun(
             run_id=run_id,
             started_at=started_at,
+            account_id=account_id,
             status="started",
         )
-        self.vault_db.record_export_run(run_record)
+        self.vault_db.record_export_run(run_record, account_id=account_id)
 
         try:
             # 1. Device Connection
@@ -81,15 +83,18 @@ class ExportPipeline:
                 15.0,
             )
 
-            # 2. Remote Backup Discovery
+            # 2. Remote Backup Discovery for target account
             notify(
-                "DISCOVERING", "Buscando copias de seguridad de WhatsApp en el teléfono...", 20.0
+                "DISCOVERING",
+                f"Localizando cuenta '{account_id}' y copias de seguridad en el teléfono...",
+                20.0,
             )
-            backups = self.device_manager.list_backups(dev_info.serial)
+            target_account = self.device_manager.get_account(dev_info.serial, account_id=account_id)
+            backups = self.device_manager.list_backups(dev_info.serial, account_id=target_account.account_id)
             target_backup = backups[0]
             notify(
                 "DISCOVERING",
-                f"Backup localizado: {target_backup.filename} ({target_backup.file_size / (1024 * 1024):.2f} MB, {target_backup.modified_at})",
+                f"Cuenta: {target_account.display_name} | Backup: {target_backup.filename} ({target_backup.file_size / (1024 * 1024):.2f} MB, {target_backup.modified_at})",
                 30.0,
             )
 
@@ -108,32 +113,32 @@ class ExportPipeline:
                 logger.info(
                     f"Backup with hash {sha256_hash} was already processed on {prev_backup.imported_at}."
                 )
-                # Proceed with export of consolidated data
                 warnings_list.append(
                     f"El backup transferido es idéntico al procesado previamente el {prev_backup.imported_at}."
                 )
 
-            # 5. Encryption Key Resolution
-            notify("KEY_RESOLUTION", "Obteniendo clave de cifrado...", 55.0)
+            # 5. Encryption Key Resolution for target account
+            notify("KEY_RESOLUTION", f"Obteniendo clave de cifrado para cuenta '{account_id}'...", 55.0)
             effective_key = (
                 key
+                or self.secret_manager.get_key(account_id)
                 or self.secret_manager.get_key(dev_info.serial)
                 or self.secret_manager.get_key("default")
             )
 
             if not effective_key:
                 raise InvalidKeyError(
-                    reason="No se proporcionó ni se encontró una clave de cifrado guardada.",
-                    action_recommended="Introduce la clave de cifrado de 64 dígitos hexadecimales.",
+                    reason=f"No se encontró una clave de cifrado guardada para la cuenta '{account_id}'.",
+                    action_recommended=f"Captura o introduce la clave de 64 dígitos con 'uv run python -m src.cli capture-key -a {account_id}'.",
                 )
 
             # 6. Decrypt and Validate SQLite
             notify(
                 "DECRYPTING",
-                "Descifrando copia de seguridad y validando integridad SQLite...",
+                f"Descifrando copia de seguridad ({target_backup.format}) y validando SQLite...",
                 65.0,
             )
-            decrypted_db_path = AppConfig.WORKING_DIR / f"{sha256_hash[:12]}_msgstore.db"
+            decrypted_db_path = AppConfig.WORKING_DIR / f"{sha256_hash[:12]}_{account_id}_msgstore.db"
             DecryptManager.decrypt(local_backup_path, effective_key, decrypted_db_path)
             notify(
                 "DECRYPTING",
@@ -152,7 +157,7 @@ class ExportPipeline:
             )
 
             # 8. Consolidate into Vault Database
-            notify("CONSOLIDATING", "Consolidando y deduplicando datos en la base local...", 90.0)
+            notify("CONSOLIDATING", f"Consolidando datos para cuenta '{account_id}' en la base local...", 90.0)
             backup_meta = BackupMetadata(
                 backup_id=sha256_hash,
                 device_id=dev_info.serial,
@@ -167,8 +172,10 @@ class ExportPipeline:
                 message_count=len(messages),
             )
             self.vault_db.save_backup_metadata(backup_meta)
-            self.vault_db.upsert_conversations(conversations)
-            _tot, inserted, updated = self.vault_db.consolidate_messages(messages, sha256_hash)
+            self.vault_db.upsert_conversations(conversations, account_id=account_id)
+            _tot, inserted, updated = self.vault_db.consolidate_messages(
+                messages, sha256_hash, account_id=account_id
+            )
 
             # 9. Pull Media if requested
             if include_media:
@@ -176,17 +183,18 @@ class ExportPipeline:
                 media_count = self.device_manager.pull_media(dev_info.serial, AppConfig.MEDIA_DIR)
                 notify("MEDIA", f"Descarga multimedia completada ({media_count} carpetas).", 94.0)
 
-            # 10. Generate CSV files and Manifest
+            # 10. Generate CSV files and Manifest in isolated account folder
             notify(
                 "EXPORTING_CSV",
-                "Generando all_messages.csv, conversations.csv y CSVs por chat...",
+                f"Generando CSVs en data/exports/{account_id}/...",
                 95.0,
             )
-            all_vault_convs = self.vault_db.get_all_conversations()
-            all_vault_msgs = self.vault_db.get_all_messages()
+            all_vault_convs = self.vault_db.get_all_conversations(account_id=account_id)
+            all_vault_msgs = self.vault_db.get_all_messages(account_id=account_id)
 
             manifest = ExportManifest(
                 run_id=run_id,
+                account_id=account_id,
                 exported_at=datetime.datetime.now(datetime.UTC).isoformat(),
                 backup_file=target_backup.filename,
                 backup_sha256=sha256_hash,
@@ -201,11 +209,13 @@ class ExportPipeline:
                 warnings=warnings_list,
             )
 
+            target_out_dir = output_dir or ExportManager.get_account_export_dir(account_id)
             files_written = ExportManager.export_all(
                 all_vault_convs,
                 all_vault_msgs,
                 manifest,
-                output_dir=output_dir or AppConfig.EXPORTS_DIR,
+                output_dir=target_out_dir,
+                account_id=account_id,
             )
 
             # Complete Run
@@ -218,17 +228,19 @@ class ExportPipeline:
             run_record.inserted_messages = inserted
             run_record.updated_messages = updated
             run_record.warnings = "; ".join(warnings_list)
-            self.vault_db.record_export_run(run_record)
+            self.vault_db.record_export_run(run_record, account_id=account_id)
 
             notify(
                 "COMPLETED",
-                f"Exportación completada: {len(all_vault_convs)} chats, {len(all_vault_msgs)} mensajes ({inserted} nuevos, {updated} actualizados).",
+                f"Exportación de '{account_id}' completada: {len(all_vault_convs)} chats, {len(all_vault_msgs)} mensajes ({inserted} nuevos, {updated} actualizados).",
                 100.0,
             )
 
             return {
                 "status": "success",
                 "run_id": run_id,
+                "account_id": account_id,
+                "account_display_name": target_account.display_name,
                 "backup_filename": target_backup.filename,
                 "backup_sha256": sha256_hash,
                 "device_model": dev_info.model or dev_info.serial,
@@ -237,23 +249,23 @@ class ExportPipeline:
                 "inserted_messages": inserted,
                 "updated_messages": updated,
                 "files_written": [str(f) for f in files_written],
-                "exports_dir": str(output_dir or AppConfig.EXPORTS_DIR),
+                "exports_dir": str(target_out_dir),
                 "warnings": warnings_list,
             }
 
         except WhatsAppBackupError as e:
-            logger.error(f"Pipeline error: {e}")
+            logger.error(f"Pipeline error for account {account_id}: {e}")
             run_record.finished_at = datetime.datetime.now(datetime.UTC).isoformat()
             run_record.status = "failed"
             run_record.error_code = e.code
             run_record.warnings = str(e)
-            self.vault_db.record_export_run(run_record)
+            self.vault_db.record_export_run(run_record, account_id=account_id)
             raise
         except Exception as e:
-            logger.exception("Unexpected error in export pipeline")
+            logger.exception(f"Unexpected error in export pipeline for account {account_id}")
             run_record.finished_at = datetime.datetime.now(datetime.UTC).isoformat()
             run_record.status = "failed"
             run_record.error_code = "UNEXPECTED_ERROR"
             run_record.warnings = str(e)
-            self.vault_db.record_export_run(run_record)
+            self.vault_db.record_export_run(run_record, account_id=account_id)
             raise
