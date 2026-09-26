@@ -114,15 +114,14 @@ class OCRManager:
     @classmethod
     def crop_to_roi(cls, image: Image.Image, roi: dict[str, float] | None = None) -> Image.Image:
         """Crop PIL Image using normalized coordinates (0.0 to 1.0)."""
-        effective_roi = roi or cls.get_saved_roi()
-        if not effective_roi:
+        if not roi:
             return image
 
         w, h = image.size
-        left = int(effective_roi["x_min"] * w)
-        top = int(effective_roi["y_min"] * h)
-        right = int(effective_roi["x_max"] * w)
-        bottom = int(effective_roi["y_max"] * h)
+        left = int(roi["x_min"] * w)
+        top = int(roi["y_min"] * h)
+        right = int(roi["x_max"] * w)
+        bottom = int(roi["y_max"] * h)
 
         # Ensure valid boundaries
         left = max(0, min(left, w - 10))
@@ -133,18 +132,47 @@ class OCRManager:
         return image.crop((left, top, right, bottom))
 
     @classmethod
+    def _cluster_and_sort_chunks(
+        cls,
+        chunks: list[tuple[float, float, str, list]],
+        row_threshold: float = 35.0,
+    ) -> list[tuple[float, float, str, list]]:
+        """Cluster 2D tokens into horizontal lines and sort left-to-right within each line."""
+        if not chunks:
+            return []
+
+        # Sort roughly by vertical position (Y)
+        sorted_by_y = sorted(chunks, key=lambda c: c[0])
+        rows: list[list[tuple[float, float, str, list]]] = []
+        current_row: list[tuple[float, float, str, list]] = []
+
+        for c in sorted_by_y:
+            cy = c[0]
+            if not current_row:
+                current_row.append(c)
+            else:
+                avg_y = sum(item[0] for item in current_row) / len(current_row)
+                if abs(cy - avg_y) <= row_threshold:
+                    current_row.append(c)
+                else:
+                    current_row.sort(key=lambda item: item[1])
+                    rows.append(current_row)
+                    current_row = [c]
+
+        if current_row:
+            current_row.sort(key=lambda item: item[1])
+            rows.append(current_row)
+
+        ordered: list[tuple[float, float, str, list]] = []
+        for r in rows:
+            for item in r:
+                ordered.append(item)
+        return ordered
+
+    @classmethod
     def clean_hex_ocr_text(cls, text: str) -> str:
         """Clean OCR recognized text and correct common OCR confusion in hex digits."""
-        # Remove whitespace, newlines, colons, hyphens, dots
         cleaned = text.strip()
-
-        # WhatsApp 64-digit key is displayed in 16 groups of 4 or 4 lines of 16.
-        # Common OCR ambiguities:
-        # 'O', 'o' -> '0'
-        # 'l', 'I', '|' -> '1'
-        # 'S', 's' -> '5'
-        # 'B' (if surrounded by hex lowercase) -> 'b'
-        # 'Z', 'z' -> '2' (in some cases)
         char_map = {
             "O": "0",
             "o": "0",
@@ -155,9 +183,9 @@ class OCRManager:
             "s": "5",
             "Z": "2",
             "z": "2",
+            "B": "b",
         }
 
-        # Replace non-hex with mapped chars
         res = []
         for ch in cleaned:
             if ch in "0123456789abcdefABCDEF":
@@ -165,23 +193,105 @@ class OCRManager:
             elif ch in char_map:
                 res.append(char_map[ch])
 
-        result_hex = "".join(res)
-        return result_hex
+        return "".join(res)
+
+    @classmethod
+    def extract_key_from_ocr_results(
+        cls,
+        ocr_result: list,
+        image_size: tuple[int, int],
+    ) -> tuple[str, dict[str, float] | None]:
+        """Extract 64-hex key from RapidOCR results using token spatial clustering and ambiguity correction."""
+        char_map = {
+            "O": "0",
+            "o": "0",
+            "l": "1",
+            "I": "1",
+            "|": "1",
+            "S": "5",
+            "s": "5",
+            "Z": "2",
+            "z": "2",
+            "B": "b",
+        }
+
+        raw_chunks: list[tuple[float, float, str, list]] = []
+        all_boxes: list[list[float]] = []
+
+        # 1. Inspect all OCR tokens
+        for item in ocr_result:
+            if len(item) < 2:
+                continue
+            box, text = item[0], item[1]
+            cy = sum(p[1] for p in box) / 4.0
+            cx = sum(p[0] for p in box) / 4.0
+
+            words = re.split(r"[\s\-_]+", text.strip())
+            for w in words:
+                if not w:
+                    continue
+                # Map potential OCR substitutions
+                cleaned = "".join(char_map.get(ch, ch) for ch in w)
+                cleaned_hex = re.sub(r"[^0-9a-fA-F]", "", cleaned).lower()
+
+                # WhatsApp displays keys in groups of 4 hex digits (or multiples of 4: 8, 16)
+                if len(cleaned_hex) % 4 == 0 and 0 < len(cleaned_hex) <= 64:
+                    # Ensure word was predominantly hex rather than Spanish word stripped of vowels/consonants
+                    if len(cleaned_hex) == len(w):
+                        for i in range(0, len(cleaned_hex), 4):
+                            sub = cleaned_hex[i : i + 4]
+                            raw_chunks.append((cy, cx, sub, box))
+                            all_boxes.append(box)
+
+        # 2. Cluster chunks into lines and sort left-to-right
+        ordered = cls._cluster_and_sort_chunks(raw_chunks, row_threshold=40.0)
+
+        # If exactly 16 4-hex chunks found, we have the complete 64-hex key
+        if len(ordered) == 16:
+            key_candidate = "".join(c[2] for c in ordered)
+            if re.fullmatch(r"[0-9a-f]{64}", key_candidate):
+                # Calculate bounding box (ROI) from the 16 key tokens
+                w_img, h_img = image_size
+                all_pts = [pt for item in ordered for pt in item[3]]
+                min_x = max(0.0, (min(p[0] for p in all_pts) - 15) / w_img)
+                max_x = min(1.0, (max(p[0] for p in all_pts) + 15) / w_img)
+                min_y = max(0.0, (min(p[1] for p in all_pts) - 15) / h_img)
+                max_y = min(1.0, (max(p[1] for p in all_pts) + 15) / h_img)
+                detected_roi = {
+                    "x_min": round(min_x, 3),
+                    "y_min": round(min_y, 3),
+                    "x_max": round(max_x, 3),
+                    "y_max": round(max_y, 3),
+                }
+                return key_candidate, detected_roi
+
+        # 3. Fallback: If contiguous block of 16 chunks in a larger set
+        if len(ordered) > 16:
+            for i in range(len(ordered) - 15):
+                candidate = "".join(ordered[j][2] for j in range(i, i + 16))
+                if len(candidate) == 64 and re.fullmatch(r"[0-9a-f]{64}", candidate):
+                    return candidate, None
+
+        # 4. Fallback: Direct text regex matching on cleaned text lines
+        raw_lines = [item[1] for item in ocr_result if len(item) >= 2]
+        full_raw_text = " ".join(raw_lines)
+        cleaned_text = cls.clean_hex_ocr_text(full_raw_text)
+
+        # Search for exact 64-hex substring
+        match = re.search(r"[0-9a-f]{64}", cleaned_text)
+        if match:
+            return match.group(0), None
+
+        return "", None
 
     @classmethod
     def extract_key_from_image(
         cls,
         image: Image.Image,
         roi: dict[str, float] | None = None,
+        use_saved_roi: bool = True,
     ) -> tuple[str, str]:
-        """Perform OCR on the image (cropped to ROI) and return (64_hex_key, raw_text)."""
-        cropped = cls.crop_to_roi(image, roi)
-
-        # Preprocessing: convert to grayscale and enhance contrast
-        gray = cropped.convert("L")
-        enhancer = ImageEnhance.Contrast(gray)
-        enhanced = enhancer.enhance(1.8)
-
+        """Perform OCR on the image (optionally cropped to ROI) and return (64_hex_key, raw_text)."""
         if _ocr_engine is None:
             raise WhatsAppBackupError(
                 code="OCR_ENGINE_UNAVAILABLE",
@@ -190,31 +300,68 @@ class OCRManager:
                 action_recommended="Instala rapidocr-onnxruntime con 'uv add rapidocr-onnxruntime'.",
             )
 
-        # Run OCR
-        ocr_result, _ = _ocr_engine(enhanced)
-        if not ocr_result:
-            # Try on original cropped color image
-            ocr_result, _ = _ocr_engine(cropped)
+        effective_roi = roi or (cls.get_saved_roi() if use_saved_roi else None)
 
-        if not ocr_result:
+        variants: list[Image.Image] = []
+        if effective_roi:
+            cropped = cls.crop_to_roi(image, effective_roi)
+            variants.append(cropped)
+            try:
+                gray = cropped.convert("L")
+                variants.append(ImageEnhance.Contrast(gray).enhance(1.6))
+            except Exception:
+                pass
+
+        # Always add original image (and enhanced original) as candidate passes
+        variants.append(image)
+        try:
+            gray_full = image.convert("L")
+            variants.append(ImageEnhance.Contrast(gray_full).enhance(1.6))
+        except Exception:
+            pass
+
+        extracted_key = ""
+        detected_roi = None
+        full_raw_text = ""
+
+        for candidate_img in variants:
+            try:
+                ocr_result, _ = _ocr_engine(candidate_img)
+            except Exception as e:
+                logger.debug(f"OCR variant pass error: {e}")
+                continue
+
+            if not ocr_result:
+                continue
+
+            raw_lines = [item[1] for item in ocr_result if len(item) >= 2]
+            current_raw = " ".join(raw_lines)
+            if not full_raw_text:
+                full_raw_text = current_raw
+
+            key, maybe_roi = cls.extract_key_from_ocr_results(ocr_result, candidate_img.size)
+            if key and len(key) == 64:
+                extracted_key = key
+                detected_roi = maybe_roi
+                full_raw_text = current_raw
+                break
+
+        if not full_raw_text:
             raise InvalidKeyError(
                 reason="No se detectó ningún texto en el área seleccionada de la pantalla.",
                 action_recommended="Asegúrate de que la pantalla del teléfono muestre la clave de 64 dígitos y delimita el área correctamente.",
             )
 
-        # Collect detected text lines
-        raw_lines = [item[1] for item in ocr_result if len(item) >= 2]
-        full_raw_text = " ".join(raw_lines)
-        logger.info(f"Raw OCR text detected: '{full_raw_text}'")
+        # If key was found and ROI was auto-calculated, save it for future runs
+        if extracted_key and detected_roi and not roi:
+            cls.save_roi(detected_roi)
 
-        cleaned_hex = cls.clean_hex_ocr_text(full_raw_text)
-
-        if len(cleaned_hex) != 64 or not re.fullmatch(r"[0-9a-f]{64}", cleaned_hex):
+        if not extracted_key or len(extracted_key) != 64:
             raise InvalidKeyError(
-                reason=f"El texto extraído por OCR contiene {len(cleaned_hex)} caracteres hexadecimales (se requieren exactamente 64). Texto detectado: '{full_raw_text}'",
-                action_recommended="Ajusta el área de captura (ROI) para encuadrar exactamente los 64 dígitos de la clave.",
+                reason=f"No se pudo aislar la clave de 64 dígitos hexadecimales. Texto detectado: '{full_raw_text[:80]}...'",
+                action_recommended="Ajusta el área de captura (ROI) en la interfaz gráfica para encuadrar los 16 bloques de la clave.",
             )
 
         # Validate format through SecretManager
-        valid_key = SecretManager.validate_hex_key(cleaned_hex)
+        valid_key = SecretManager.validate_hex_key(extracted_key)
         return valid_key, full_raw_text

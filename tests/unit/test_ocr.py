@@ -41,17 +41,17 @@ def test_roi_save_and_get(tmp_path: Path, monkeypatch):
 
 def test_extract_key_from_synthetic_image():
     """Test OCR key extraction on a synthetic image containing 64 hex characters."""
-    img = Image.new("RGB", (800, 250), color=(255, 255, 255))
+    img = Image.new("RGB", (1000, 400), color=(255, 255, 255))
     d = ImageDraw.Draw(img)
 
     lines = [
-        "4a 1f 89 b2 c3 d4 e5 f6",
-        "01 23 45 67 89 ab cd ef",
-        "fe dc ba 98 76 54 32 10",
-        "11 22 33 44 55 66 77 88",
+        "4a1f 89b2 c3d4 e5f6",
+        "0123 4567 89ab cdef",
+        "fedc ba98 7654 3210",
+        "1122 3344 5566 7788",
     ]
     for i, line in enumerate(lines):
-        d.text((40, 30 + i * 40), line, fill=(0, 0, 0))
+        d.text((50, 40 + i * 60), line, fill=(0, 0, 0))
 
     key, raw_text = OCRManager.extract_key_from_image(img)
     assert len(key) == 64
