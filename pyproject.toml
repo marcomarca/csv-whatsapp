@@ -1,0 +1,45 @@
+[project]
+name = "whatsapp-backup-csv"
+version = "0.1.0"
+description = "Automated WhatsApp Backup to CSV extraction and consolidation via ADB"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "colorama>=0.4.6",
+    "configobj>=5.0.9",
+    "cryptography>=50.0.1",
+    "keyring>=25.7.0",
+    "numpy>=2.0.0",
+    "pandas>=2.2.0",
+    "pycryptodome>=3.20.0",
+    "wa-crypt-tools>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+whatsapp-csv = "src.cli:main"
+whatsapp-gui = "src.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["vendor"]
+
+[tool.ruff.lint]
+ignore = ["BLE001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src", "vendor/whapa/libs"]

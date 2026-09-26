@@ -1,0 +1,43 @@
+# Python & Bytecode
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual Environment
+.venv/
+env/
+venv/
+
+# WhatsApp Backup & Decryption Secrets
+*.key
+*.secret
+*.crypt*
+*.enc
+*.db
+*.sqlite
+*.sqlite3
+
+# Data Directories (Backups, Working DBs, Exports, Logs, Media)
+data/
+data/*
+!data/.gitkeep
+!data/backups/.gitkeep
+!data/working/.gitkeep
+!data/exports/.gitkeep
+!data/logs/.gitkeep
+
+# CSV exports
+*.csv
+manifest.json
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
