@@ -42,11 +42,26 @@ class DeviceManager:
             )
             return res
         except FileNotFoundError:
-            raise DeviceNotFoundError(
-                operation="run_adb",
-                message=f"No se encontró el ejecutable de ADB en '{self.adb_path}'.",
-                action_recommended="Verifica que Android SDK Platform Tools esté instalado o añade adb al PATH.",
-            )
+            try:
+                from src.adb_installer import ensure_adb
+
+                self.adb_path = ensure_adb(auto_download=True)
+                cmd = [self.adb_path] + args
+                return subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except Exception:
+                raise DeviceNotFoundError(
+                    operation="run_adb",
+                    message=f"No se encontró el ejecutable de ADB en '{self.adb_path}'.",
+                    action_recommended="Verifica que Android SDK Platform Tools esté instalado o añade adb al PATH.",
+                )
         except subprocess.TimeoutExpired:
             raise BackupCopyFailedError(
                 source="adb_command",
@@ -372,6 +387,49 @@ class DeviceManager:
         """Find the latest primary backup for an account or default."""
         backups = self.list_backups(serial, account_id=account_id)
         return backups[0]
+
+    def get_remote_file_size(self, serial: str, remote_path: str) -> int:
+        """Get the exact byte size of a remote backup file on Android."""
+        res = self.run_adb(
+            ["-s", serial, "shell", f"stat -c %s '{remote_path}' 2>/dev/null || ls -nl '{remote_path}' 2>/dev/null"]
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            out = res.stdout.strip()
+            if out.isdigit():
+                return int(out)
+            parts = out.split()
+            for p in parts:
+                if p.isdigit() and int(p) > 100:
+                    return int(p)
+        return 0
+
+    def wait_for_backup_stability(
+        self,
+        serial: str,
+        remote_path: str,
+        max_wait_seconds: int = 15,
+        poll_interval: float = 1.5,
+    ) -> int:
+        """Ensure the backup file is not actively being written by WhatsApp before pulling."""
+        import time
+
+        start_time = time.time()
+        initial_size = self.get_remote_file_size(serial, remote_path)
+        last_size = initial_size
+
+        while (time.time() - start_time) < max_wait_seconds:
+            time.sleep(poll_interval)
+            curr_size = self.get_remote_file_size(serial, remote_path)
+            if curr_size > 0 and curr_size == last_size:
+                logger.info(f"El backup remoto '{remote_path}' está estable ({curr_size} bytes).")
+                return curr_size
+            if curr_size != last_size:
+                logger.info(
+                    f"Copia de seguridad en curso en WhatsApp (tamaño cambiando: {last_size} -> {curr_size} bytes). Esperando finalización..."
+                )
+            last_size = curr_size
+
+        return last_size
 
     def pull_backup(
         self,

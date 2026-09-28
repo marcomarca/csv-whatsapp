@@ -279,3 +279,22 @@ def test_list_whatsapp_accounts_honor_realme(monkeypatch):
     honor_accs = dev_mgr.list_whatsapp_accounts("honor123")
     assert any(a.account_id == "dual_honor" for a in honor_accs)
 
+
+def test_wait_for_backup_stability(monkeypatch):
+    """Test wait_for_backup_stability detects changing size and returns stable size."""
+    dev_mgr = DeviceManager(adb_path="mock_adb")
+    sizes = ["1000", "2000", "2000"]
+    call_idx = 0
+
+    def mock_run(args, timeout=60):
+        nonlocal call_idx
+        res_size = sizes[min(call_idx, len(sizes) - 1)]
+        call_idx += 1
+        return subprocess.CompletedProcess(args, 0, stdout=f"{res_size}\n", stderr="")
+
+    monkeypatch.setattr(dev_mgr, "run_adb", mock_run)
+    stable_size = dev_mgr.wait_for_backup_stability(
+        "test_serial", "/path/to/msgstore.db.crypt15", max_wait_seconds=5, poll_interval=0.01
+    )
+    assert stable_size == 2000
+

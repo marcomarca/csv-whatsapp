@@ -42,3 +42,7 @@ manifest.json
 .DS_Store
 Thumbs.db
 scratch/
+
+# Bundled & Platform Tools
+vendor/platform-tools/
+*.zip

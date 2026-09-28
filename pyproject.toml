@@ -46,3 +46,8 @@ ignore = ["BLE001"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "src", "vendor/whapa/libs"]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.3",
+]

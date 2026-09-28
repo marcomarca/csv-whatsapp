@@ -38,7 +38,18 @@ class AppUI(tk.Tk):
         )
 
         self._build_ui()
+        self.export_running = False
         self.refresh_status()
+        self._start_auto_poll()
+
+    def _start_auto_poll(self):
+        """Periodically check device connection and authorization status."""
+        if not getattr(self, "export_running", False):
+            try:
+                self.refresh_status()
+            except Exception:
+                pass
+        self.after(3000, self._start_auto_poll)
 
     def _configure_styles(self):
         self.style = ttk.Style(self)
@@ -295,10 +306,15 @@ class AppUI(tk.Tk):
                     except Exception as e:
                         logger.warning(f"Error listing accounts: {e}")
                 else:
-                    self.lbl_device.config(text=f"{dev.serial}", style="BadgeWarn.TLabel")
-                    self.lbl_adb.config(
-                        text=f"No Autorizado ({dev.state})", style="BadgeWarn.TLabel"
-                    )
+                    self.lbl_device.config(text=f"{dev.serial} (Sin autorizar)", style="BadgeWarn.TLabel")
+                    if dev.state in ("unauthorized", "authorizing"):
+                        self.lbl_adb.config(
+                            text="Acepta el aviso en el móvil (RSA)", style="BadgeWarn.TLabel"
+                        )
+                    else:
+                        self.lbl_adb.config(
+                            text=f"Estado: {dev.state}", style="BadgeWarn.TLabel"
+                        )
 
         except Exception as e:
             self.lbl_device.config(text="Error ADB", style="BadgeErr.TLabel")

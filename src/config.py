@@ -1,20 +1,30 @@
-"""Application configuration and environment settings."""
-
 import os
 import shutil
+import sys
 from pathlib import Path
 
 
 class AppConfig:
     """Configuration paths and settings."""
 
-    # Base workspace paths
-    ROOT_DIR: Path = Path(__file__).resolve().parent.parent
-    SRC_DIR: Path = ROOT_DIR / "src"
-    VENDOR_DIR: Path = ROOT_DIR / "vendor"
+    # Base workspace paths supporting normal run and PyInstaller bundle
+    if getattr(sys, "frozen", False):
+        BUNDLE_DIR: Path = Path(sys._MEIPASS)
+        APP_DIR: Path = Path(sys.executable).resolve().parent
+    else:
+        BUNDLE_DIR: Path = Path(__file__).resolve().parent.parent
+        APP_DIR: Path = Path(__file__).resolve().parent.parent
+
+    ROOT_DIR: Path = APP_DIR
+    SRC_DIR: Path = BUNDLE_DIR / "src"
+
+    # Vendor directory (bundled in frozen app or local)
+    _bundled_vendor = BUNDLE_DIR / "vendor"
+    _local_vendor = APP_DIR / "vendor"
+    VENDOR_DIR: Path = _bundled_vendor if _bundled_vendor.exists() else _local_vendor
     WHAPA_LIBS_DIR: Path = VENDOR_DIR / "whapa" / "libs"
 
-    DATA_DIR: Path = ROOT_DIR / "data"
+    DATA_DIR: Path = APP_DIR / "data"
     BACKUPS_DIR: Path = DATA_DIR / "backups"
     WORKING_DIR: Path = DATA_DIR / "working"
     EXPORTS_DIR: Path = DATA_DIR / "exports"
@@ -52,43 +62,21 @@ class AppConfig:
 
     # ADB executable detection
     @classmethod
-    def get_adb_path(cls) -> str:
-        """Find the adb executable path on the system."""
-        # 1. Explicit env var
-        env_adb = os.environ.get("ADB_PATH")
-        if env_adb and os.path.isfile(env_adb):
-            return env_adb
+    def get_adb_path(cls, auto_download: bool = True) -> str:
+        """Find or automatically install the adb executable path on the system."""
+        try:
+            from src.adb_installer import ensure_adb
 
-        # 2. Check vendor/bundled platform-tools
-        vendor_adb = cls.VENDOR_DIR / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
-        if vendor_adb.is_file():
-            return str(vendor_adb)
-
-        # 3. Check PATH
-        path_adb = shutil.which("adb")
-        if path_adb:
-            return path_adb
-
-        # 4. Check standard Windows Android SDK location
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            standard_win_adb = (
-                Path(local_app_data) / "Android" / "Sdk" / "platform-tools" / "adb.exe"
-            )
-            if standard_win_adb.is_file():
-                return str(standard_win_adb)
-
-        # 5. Check common root platform-tools
-        for common_path in (
-            Path("C:/platform-tools/adb.exe"),
-            Path("C:/tools/platform-tools/adb.exe"),
-            Path("C:/scrcpy/adb.exe"),
-        ):
-            if common_path.is_file():
-                return str(common_path)
-
-        # 6. Fallback default
-        return "adb"
+            return ensure_adb(auto_download=auto_download)
+        except Exception:
+            # Fallback to local search
+            vendor_adb = cls.VENDOR_DIR / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+            if vendor_adb.is_file():
+                return str(vendor_adb)
+            path_adb = shutil.which("adb")
+            if path_adb:
+                return path_adb
+            return "adb"
 
     @classmethod
     def ensure_directories(cls) -> None:

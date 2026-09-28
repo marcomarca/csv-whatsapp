@@ -98,8 +98,9 @@ class ExportPipeline:
                 30.0,
             )
 
-            # 3. Pull Backup via ADB
-            notify("PULLING", f"Descargando {target_backup.filename} desde el dispositivo...", 40.0)
+            # 3. Pull Backup via ADB with stability check
+            notify("PULLING", f"Comprobando estabilidad y descargando {target_backup.filename}...", 40.0)
+            self.device_manager.wait_for_backup_stability(dev_info.serial, target_backup.remote_path)
             local_backup_path, sha256_hash = self.device_manager.pull_backup(
                 dev_info.serial,
                 target_backup.remote_path,
