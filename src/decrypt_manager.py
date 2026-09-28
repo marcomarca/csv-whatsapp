@@ -142,21 +142,33 @@ class DecryptManager:
         # Handle key
         key_source = str(key) if isinstance(key, Path) else key.strip()
 
-        # Try using whacipher
-        if whacipher is None:
-            raise DecryptionFailedError(
-                reason="El módulo whacipher no está disponible en vendor/whapa/libs."
-            )
-
+        # Try using whacipher or wa_crypt_tools
         temp_out = output_path.with_suffix(".tmp_decrypted")
         temp_out.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            success = whacipher.decrypt(str(encrypted_path), key_source, str(temp_out))
-            if not success or not temp_out.is_file() or temp_out.stat().st_size == 0:
-                raise DecryptionFailedError(
-                    reason="El proceso de descifrado no generó datos válidos."
-                )
+            if whacipher is not None:
+                success = whacipher.decrypt(str(encrypted_path), key_source, str(temp_out))
+                if not success or not temp_out.is_file() or temp_out.stat().st_size == 0:
+                    raise DecryptionFailedError(
+                        reason="El proceso de descifrado no generó datos válidos."
+                    )
+            else:
+                import zlib
+                from wa_crypt_tools.wadecrypt import DatabaseFactory, KeyFactory
+
+                with open(encrypted_path, "rb") as enc_f:
+                    db = DatabaseFactory.from_file(enc_f)
+                    key_obj = KeyFactory.new(key_source)
+                    output_decrypted = db.decrypt(key_obj, enc_f.read())
+                    try:
+                        z_obj = zlib.decompressobj()
+                        output_data = z_obj.decompress(output_decrypted)
+                    except zlib.error:
+                        output_data = output_decrypted
+
+                    with open(temp_out, "wb") as out_f:
+                        out_f.write(output_data)
 
             # Validate SQLite
             cls.validate_sqlite(temp_out)
@@ -168,20 +180,14 @@ class DecryptManager:
             logger.info(f"Decryption and validation successful: {output_path}")
             return output_path
 
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, Exception) as e:
             if temp_out.exists():
                 temp_out.unlink(missing_ok=True)
+            if isinstance(e, WhatsAppBackupError):
+                raise
             raise InvalidKeyError(
                 reason=f"Error criptográfico durante el descifrado: {e}. Comprueba que la clave pertenezca a esta copia.",
             )
-        except WhatsAppBackupError:
-            if temp_out.exists():
-                temp_out.unlink(missing_ok=True)
-            raise
-        except Exception as e:
-            if temp_out.exists():
-                temp_out.unlink(missing_ok=True)
-            raise DecryptionFailedError(reason=f"Fallo inesperado durante el descifrado: {e}")
 
     @classmethod
     def encrypt_synthetic_backup(
@@ -191,8 +197,22 @@ class DecryptManager:
         output_path: Path,
     ) -> Path:
         """Create a synthetic encrypted crypt15 backup for testing."""
-        if whacipher is None:
-            raise DecryptionFailedError(reason="whacipher no está disponible.")
+        if whacipher is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            whacipher.encrypt(str(sqlite_path), key_hex, str(output_path))
+            return output_path
+
+        import zlib
+        from wa_crypt_tools.wadecrypt import KeyFactory
+        from wa_crypt_tools.waencrypt import Database15, Props
+
+        key_obj = KeyFactory.from_hex(key_hex)
+        with open(sqlite_path, "rb") as in_f:
+            data = in_f.read()
+        db = Database15(key=key_obj)
+        compressed = zlib.compress(data, 1)
+        encrypted = db.encrypt(key_obj, Props(), compressed)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        whacipher.encrypt(str(sqlite_path), key_hex, str(output_path))
+        with open(output_path, "wb") as out_f:
+            out_f.write(encrypted)
         return output_path

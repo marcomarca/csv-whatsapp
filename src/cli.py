@@ -494,16 +494,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="No guardar automáticamente la clave en el almacén seguro (solo imprimir)",
     )
 
-    # history
-    p_hist = subparsers.add_parser(
-        "history", help="Muestra el historial de exportaciones realizadas"
-    )
-    p_hist.add_argument(
-        "-a", "--account", help="Filtrar historial por cuenta específica"
-    )
-    p_hist.add_argument(
-        "-n", "--limit", type=int, default=20, help="Número máximo de ejecuciones a mostrar"
-    )
 
     # parse-local
     p_local = subparsers.add_parser(

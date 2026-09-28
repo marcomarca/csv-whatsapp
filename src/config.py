@@ -59,12 +59,17 @@ class AppConfig:
         if env_adb and os.path.isfile(env_adb):
             return env_adb
 
-        # 2. Check PATH
+        # 2. Check vendor/bundled platform-tools
+        vendor_adb = cls.VENDOR_DIR / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+        if vendor_adb.is_file():
+            return str(vendor_adb)
+
+        # 3. Check PATH
         path_adb = shutil.which("adb")
         if path_adb:
             return path_adb
 
-        # 3. Check standard Windows Android SDK location
+        # 4. Check standard Windows Android SDK location
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             standard_win_adb = (
@@ -73,7 +78,16 @@ class AppConfig:
             if standard_win_adb.is_file():
                 return str(standard_win_adb)
 
-        # 4. Fallback default
+        # 5. Check common root platform-tools
+        for common_path in (
+            Path("C:/platform-tools/adb.exe"),
+            Path("C:/tools/platform-tools/adb.exe"),
+            Path("C:/scrcpy/adb.exe"),
+        ):
+            if common_path.is_file():
+                return str(common_path)
+
+        # 6. Fallback default
         return "adb"
 
     @classmethod

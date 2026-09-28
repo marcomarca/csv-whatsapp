@@ -195,6 +195,26 @@ class MessageParser:
                     except sqlite3.Error:
                         pass
 
+                # Build media mapping if message_media exists
+                media_map = {}
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='message_media';"
+                )
+                if cursor.fetchone():
+                    try:
+                        cursor.execute(
+                            "SELECT message_row_id, file_path, file_size, mime_type, media_caption FROM message_media;"
+                        )
+                        for m_row in cursor.fetchall():
+                            media_map[m_row["message_row_id"]] = {
+                                "file_path": m_row["file_path"],
+                                "file_size": m_row["file_size"],
+                                "mime_type": m_row["mime_type"],
+                                "media_caption": m_row["media_caption"],
+                            }
+                    except sqlite3.Error:
+                        pass
+
                 # Query messages
                 cursor.execute("""
                     SELECT 
@@ -228,6 +248,12 @@ class MessageParser:
 
                     uid = row["key_id"] or f"{conv_id}_{row['_id']}_{ts_sec}"
 
+                    media_info = media_map.get(row["_id"])
+                    media_path = media_info["file_path"] if media_info else None
+                    media_mime = media_info["mime_type"] if media_info else None
+                    media_size = media_info["file_size"] if media_info else None
+                    msg_text = row["text_data"] or (media_info["media_caption"] if media_info else None)
+
                     msg = Message(
                         message_uid=str(uid),
                         conversation_id=conv_id,
@@ -239,7 +265,11 @@ class MessageParser:
                         message_type="text"
                         if row["message_type"] == 0
                         else f"type_{row['message_type']}",
-                        text=row["text_data"],
+                        text=msg_text,
+                        media_path=media_path,
+                        media_mime=media_mime,
+                        media_size=media_size,
+                        media_status="missing" if media_path else "not_exported",
                         starred=bool(row["starred"]),
                         raw_type_code=row["message_type"],
                         source_backup_id=backup_id,
