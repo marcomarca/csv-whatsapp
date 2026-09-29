@@ -15,6 +15,15 @@ datas += collect_data_files('rapidocr_onnxruntime')
 # wa-crypt-tools protobufs and assets
 datas += collect_data_files('wa_crypt_tools')
 
+# Branding assets (icons, logo marks)
+branding_dir = project_dir / "branding_numero_2"
+if branding_dir.exists():
+    for root, dirs, files in os.walk(branding_dir):
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_dir = os.path.relpath(root, project_dir)
+            datas.append((full_path, rel_dir))
+
 # 2. Collect hidden imports
 hiddenimports = [
     'keyring.backends',
@@ -123,5 +132,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=str(project_dir / 'branding_numero_2' / 'app-icon' / 'favicon.ico'),
 )

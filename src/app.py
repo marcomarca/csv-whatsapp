@@ -8,6 +8,8 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+from PIL import Image, ImageTk
+
 from src.config import AppConfig
 from src.database import VaultDatabase
 from src.device_manager import DeviceManager
@@ -29,6 +31,22 @@ class AppUI(tk.Tk):
         self.title("WhatsApp Backup to CSV")
         self.geometry("780x640")
         self.minsize(700, 560)
+
+        # Set window icon from branding
+        ico_file = AppConfig.get_favicon_ico()
+        if ico_file and sys.platform == "win32":
+            try:
+                self.iconbitmap(str(ico_file))
+            except Exception:
+                pass
+
+        png_icon = AppConfig.get_app_icon_png(64)
+        if png_icon:
+            try:
+                self._app_icon_photo = ImageTk.PhotoImage(Image.open(png_icon))
+                self.iconphoto(False, self._app_icon_photo)
+            except Exception:
+                pass
 
         # Apply clean styling
         self._configure_styles()
@@ -81,15 +99,28 @@ class AppUI(tk.Tk):
         self.style.configure("Primary.TButton", font=("Helvetica", 12, "bold"), padding=10)
 
     def _build_ui(self):
-        # Top Header
-        header_frame = ttk.Frame(self, padding="15 10 15 5")
+        # Top Header Frame with Branding Logo
+        header_frame = ttk.Frame(self, padding="15 12 15 6")
         header_frame.pack(fill=tk.X)
 
-        title_lbl = ttk.Label(header_frame, text="WhatsApp Backup to CSV", style="Title.TLabel")
+        logo_path = AppConfig.get_logo_mark_png(128)
+        if logo_path:
+            try:
+                logo_img = Image.open(logo_path).resize((46, 46), Image.Resampling.LANCZOS)
+                self._header_logo_photo = ImageTk.PhotoImage(logo_img)
+                lbl_logo = ttk.Label(header_frame, image=self._header_logo_photo)
+                lbl_logo.pack(side=tk.LEFT, padx=(0, 12))
+            except Exception:
+                pass
+
+        title_box = ttk.Frame(header_frame)
+        title_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        title_lbl = ttk.Label(title_box, text="WhatsApp Backup to CSV", style="Title.TLabel")
         title_lbl.pack(anchor=tk.W)
 
         sub_lbl = ttk.Label(
-            header_frame,
+            title_box,
             text="Exportación automática, descifrado verificado y consolidación de chats en CSV normalizados.",
             style="Subtitle.TLabel",
         )

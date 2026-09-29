@@ -8,6 +8,7 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
+from src.config import AppConfig
 from src.errors import WhatsAppBackupError
 from src.ocr_manager import OCRManager
 from src.secret_manager import SecretManager
@@ -35,6 +36,15 @@ class CaptureKeyDialog(tk.Toplevel):
         self.minsize(740, 600)
         self.transient(parent)
         self.grab_set()
+
+        # Set dialog icon from branding
+        png_icon = AppConfig.get_app_icon_png(64)
+        if png_icon:
+            try:
+                self._dialog_icon_photo = ImageTk.PhotoImage(Image.open(png_icon))
+                self.iconphoto(False, self._dialog_icon_photo)
+            except Exception:
+                pass
 
         self.ocr_manager = ocr_manager or OCRManager()
         self.secret_manager = SecretManager()

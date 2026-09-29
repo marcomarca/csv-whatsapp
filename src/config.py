@@ -33,6 +33,32 @@ class AppConfig:
     MEDIA_DIR: Path = DATA_DIR / "media"
     VAULT_DB_PATH: Path = WORKING_DIR / "whatsapp_vault.db"
 
+    # Branding assets
+    _bundled_branding = BUNDLE_DIR / "branding_numero_2"
+    _local_branding = APP_DIR / "branding_numero_2"
+    BRANDING_DIR: Path = _bundled_branding if _bundled_branding.exists() else _local_branding
+
+    @classmethod
+    def get_favicon_ico(cls) -> Path | None:
+        p = cls.BRANDING_DIR / "app-icon" / "favicon.ico"
+        return p if p.is_file() else None
+
+    @classmethod
+    def get_app_icon_png(cls, size: int = 64) -> Path | None:
+        p = cls.BRANDING_DIR / "app-icon" / f"icon-{size}x{size}.png"
+        if p.is_file():
+            return p
+        fallback = cls.BRANDING_DIR / "app-icon" / "icon-64x64.png"
+        return fallback if fallback.is_file() else None
+
+    @classmethod
+    def get_logo_mark_png(cls, size: int = 128) -> Path | None:
+        p = cls.BRANDING_DIR / "logo-mark" / f"logo-mark-transparent-{size}x{size}.png"
+        if p.is_file():
+            return p
+        fallback = cls.BRANDING_DIR / "logo-mark" / "logo-mark-transparent-128x128.png"
+        return fallback if fallback.is_file() else None
+
     # Security / Keyring
     KEYRING_SERVICE_NAME: str = "whatsapp_backup_csv"
 
