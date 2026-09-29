@@ -1,5 +1,6 @@
 """Tkinter Desktop User Interface for WhatsApp Backup to CSV."""
 
+import logging
 import os
 import subprocess
 import sys
@@ -11,9 +12,12 @@ from src.config import AppConfig
 from src.database import VaultDatabase
 from src.device_manager import DeviceManager
 from src.errors import WhatsAppBackupError
+from src.logger import setup_logging
 from src.ocr_dialog import CaptureKeyDialog
 from src.pipeline import ExportPipeline
 from src.secret_manager import SecretManager
+
+logger = logging.getLogger(__name__)
 
 
 class AppUI(tk.Tk):
@@ -21,6 +25,7 @@ class AppUI(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        logger.info("Inicializando ventana principal AppUI...")
         self.title("WhatsApp Backup to CSV")
         self.geometry("780x640")
         self.minsize(700, 560)
@@ -28,6 +33,7 @@ class AppUI(tk.Tk):
         # Apply clean styling
         self._configure_styles()
 
+        logger.info("Inicializando administradores y almacén de datos...")
         self.device_manager = DeviceManager()
         self.secret_manager = SecretManager()
         self.vault_db = VaultDatabase()
@@ -37,10 +43,12 @@ class AppUI(tk.Tk):
             vault_db=self.vault_db,
         )
 
+        logger.info("Construyendo interfaz gráfica...")
         self._build_ui()
         self.export_running = False
         self.refresh_status()
         self._start_auto_poll()
+        logger.info("Ventana principal AppUI lista para interacción.")
 
     def _start_auto_poll(self):
         """Periodically check device connection and authorization status."""
@@ -504,6 +512,7 @@ class AppUI(tk.Tk):
             self.open_exports_folder()
 
     def _on_export_error(self, e: WhatsAppBackupError):
+        logger.error(f"Error en exportación [{e.code}]: {e.message} (Acción: {e.action_recommended})")
         self.lbl_step.config(text=f"Error: {e.code}")
         self.log_message(f"[ERROR {e.code}] {e.message}")
         messagebox.showerror(
@@ -513,6 +522,7 @@ class AppUI(tk.Tk):
         )
 
     def _on_unexpected_error(self, e: Exception):
+        logger.exception(f"Error inesperado durante exportación: {e}")
         self.lbl_step.config(text="Error inesperado.")
         self.log_message(f"[ERROR INESPERADO] {e}")
         messagebox.showerror("Error Inesperado", f"Ocurrió un error inesperado:\n{e}", parent=self)
@@ -520,9 +530,13 @@ class AppUI(tk.Tk):
 
 def main():
     AppConfig.ensure_directories()
+    setup_logging()
+    logger.info("Iniciando bucle de eventos Tkinter GUI...")
     app = AppUI()
     app.mainloop()
+    logger.info("Aplicación GUI finalizada normalmente.")
 
 
 if __name__ == "__main__":
     main()
+

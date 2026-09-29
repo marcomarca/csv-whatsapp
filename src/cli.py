@@ -16,20 +16,7 @@ from src.ocr_manager import OCRManager
 from src.pipeline import ExportPipeline
 from src.secret_manager import SecretManager
 
-
-def setup_logging(verbose: bool = False) -> None:
-    AppConfig.ensure_directories()
-    log_file = AppConfig.LOGS_DIR / "whatsapp_backup.log"
-    level = logging.DEBUG if verbose else logging.INFO
-
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+from src.logger import setup_logging
 
 
 def cmd_accounts(args: argparse.Namespace) -> int:

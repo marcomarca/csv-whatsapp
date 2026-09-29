@@ -17,6 +17,17 @@ class SecretManager:
 
     def __init__(self, service_name: str | None = None):
         self.service_name = service_name or AppConfig.KEYRING_SERVICE_NAME
+        self._ensure_backend()
+
+    def _ensure_backend(self) -> None:
+        """Ensure a valid keyring backend is registered, especially in frozen binaries."""
+        import sys
+        if sys.platform == "win32":
+            try:
+                import keyring.backends.Windows
+                keyring.set_keyring(keyring.backends.Windows.WinVaultKeyring())
+            except Exception as e:
+                logger.debug(f"No se pudo forzar el backend de keyring de Windows: {e}")
 
     @staticmethod
     def sanitize_key(raw_key: str) -> str:

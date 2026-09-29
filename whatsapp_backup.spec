@@ -50,11 +50,21 @@ hiddenimports = [
 hiddenimports += collect_submodules('wa_crypt_tools')
 hiddenimports += collect_submodules('rapidocr_onnxruntime')
 hiddenimports += collect_submodules('src')
+hiddenimports += collect_submodules('keyring')
+hiddenimports += collect_submodules('win32ctypes')
+hiddenimports += collect_submodules('jaraco')
+
+import glob
+
+# Collect Python base DLLs (python313.dll, python3.dll, vcruntime140.dll)
+binaries = []
+for dll_path in glob.glob(os.path.join(sys.base_prefix, '*.dll')):
+    binaries.append((dll_path, '.'))
 
 a = Analysis(
     ['src/entrypoint.py'],
     pathex=[str(project_dir)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -65,6 +75,32 @@ a = Analysis(
     win_private_assemblies=False,
     noarchive=False,
 )
+
+from PyInstaller.building.datastruct import TOC
+
+print(f"[*] TOTAL a.binaries before filter: {len(a.binaries)}")
+filtered_binaries = []
+for b in list(a.binaries):
+    name = str(b[0]).lower()
+    path = str(b[1]).lower() if len(b) > 1 else ""
+    if any(k in name or k in path for k in ("api-ms-win", "ext-ms-win", "ucrtbase")):
+        print(f"[*] Filtering out binary: {b[0]} ({path})")
+    else:
+        filtered_binaries.append(b)
+
+a.binaries = TOC(filtered_binaries)
+print(f"[*] TOTAL a.binaries after filter: {len(a.binaries)}")
+
+filtered_datas = []
+for d in list(a.datas):
+    name = str(d[0]).lower()
+    path = str(d[1]).lower() if len(d) > 1 else ""
+    if any(k in name for k in (".dist-info", "egg-info", "installer", "record", "direct_url.json")):
+        continue
+    if any(k in name or k in path for k in ("api-ms-win", "ext-ms-win")):
+        continue
+    filtered_datas.append(d)
+a.datas = TOC(filtered_datas)
 
 pyz = PYZ(a.pure)
 
