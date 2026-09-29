@@ -349,6 +349,45 @@ class VaultDatabase:
         )
         return total, inserted, updated
 
+    def get_stats(
+        self, account_id: str | None = None, device_serial: str | None = None
+    ) -> tuple[int, int]:
+        """Return fast count of conversations and messages without deserializing full objects."""
+        with self._get_connection() as conn:
+            # 1. Conversations count
+            conv_query = "SELECT COUNT(*) FROM conversations"
+            conv_params: list[str] = []
+            conv_conds: list[str] = []
+            if account_id:
+                conv_conds.append("account_id = ?")
+                conv_params.append(account_id)
+            if device_serial:
+                conv_conds.append("device_serial = ?")
+                conv_params.append(device_serial)
+            if conv_conds:
+                conv_query += " WHERE " + " AND ".join(conv_conds)
+            conv_cur = conn.execute(conv_query, tuple(conv_params))
+            conv_row = conv_cur.fetchone()
+            conv_count = conv_row[0] if conv_row else 0
+
+            # 2. Messages count
+            msg_query = "SELECT COUNT(*) FROM messages"
+            msg_params: list[str] = []
+            msg_conds: list[str] = []
+            if account_id:
+                msg_conds.append("account_id = ?")
+                msg_params.append(account_id)
+            if device_serial:
+                msg_conds.append("device_serial = ?")
+                msg_params.append(device_serial)
+            if msg_conds:
+                msg_query += " WHERE " + " AND ".join(msg_conds)
+            msg_cur = conn.execute(msg_query, tuple(msg_params))
+            msg_row = msg_cur.fetchone()
+            msg_count = msg_row[0] if msg_row else 0
+
+            return conv_count, msg_count
+
     def get_all_conversations(
         self, account_id: str | None = None, device_serial: str | None = None
     ) -> list[Conversation]:

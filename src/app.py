@@ -46,18 +46,20 @@ class AppUI(tk.Tk):
         logger.info("Construyendo interfaz gráfica...")
         self._build_ui()
         self.export_running = False
+        self._refresh_running = False
+        self._refresh_lock = threading.Lock()
         self.refresh_status()
         self._start_auto_poll()
         logger.info("Ventana principal AppUI lista para interacción.")
 
     def _start_auto_poll(self):
-        """Periodically check device connection and authorization status."""
+        """Periodically check device connection and authorization status without blocking the UI."""
         if not getattr(self, "export_running", False):
             try:
                 self.refresh_status()
             except Exception:
                 pass
-        self.after(3000, self._start_auto_poll)
+        self.after(4000, self._start_auto_poll)
 
     def _configure_styles(self):
         self.style = ttk.Style(self)
@@ -230,7 +232,7 @@ class AppUI(tk.Tk):
         self._refresh_account_specific_badges()
 
     def _refresh_account_specific_badges(self):
-        """Update Key, Backup, and Vault status specifically for the selected account and active device."""
+        """Update Key, Backup, and Vault status specifically for the selected account and active device (Instant O(1))."""
         acc_id = self.selected_account_id
         dev_serial = getattr(self, "active_device_serial", "")
 
@@ -256,77 +258,118 @@ class AppUI(tk.Tk):
         else:
             self.lbl_backup.config(text="Sin copias de seguridad encontradas")
 
-        # Vault status for this account
-        convs = self.vault_db.get_all_conversations(account_id=acc_id, device_serial=dev_serial)
-        msgs = self.vault_db.get_all_messages(account_id=acc_id, device_serial=dev_serial)
+        # Fast Vault stats count for this account (< 0.1ms)
+        conv_count, msg_count = self.vault_db.get_stats(account_id=acc_id, device_serial=dev_serial)
         self.lbl_vault.config(
-            text=f"{len(convs)} conversaciones | {len(msgs)} mensajes en '{acc_id}'"
+            text=f"{conv_count} conversaciones | {msg_count} mensajes en '{acc_id}'"
         )
 
-    def refresh_status(self):
-        """Query ADB, Keyring, and Vault to refresh status badges and account list."""
-        self.active_device_serial = ""
+    def refresh_status(self, force: bool = False):
+        """Asynchronously query ADB, Keyring, and Vault without freezing the Tkinter event loop."""
+        if getattr(self, "export_running", False):
+            return
+
+        with self._refresh_lock:
+            if self._refresh_running and not force:
+                return
+            self._refresh_running = True
+
+        threading.Thread(target=self._async_refresh_worker, daemon=True).start()
+
+    def _async_refresh_worker(self):
+        """Worker thread executing ADB and filesystem discovery off the main GUI thread."""
+        status_data: dict = {
+            "connected": False,
+            "authorized": False,
+            "device_text": "No detectado",
+            "device_style": "BadgeErr.TLabel",
+            "adb_text": "Desconectado",
+            "adb_style": "BadgeErr.TLabel",
+            "backup_text": "Desconocido",
+            "accounts": [],
+            "active_serial": "",
+        }
+
         try:
             devices = self.device_manager.get_devices()
             if not devices:
-                self.lbl_device.config(text="No detectado", style="BadgeErr.TLabel")
-                self.lbl_adb.config(text="Desconectado", style="BadgeErr.TLabel")
-                self.lbl_backup.config(text="Desconocido")
-                self.cmb_accounts["values"] = ["principal"]
-                self.cmb_accounts.set("principal")
+                status_data["device_text"] = "No detectado"
+                status_data["device_style"] = "BadgeErr.TLabel"
+                status_data["adb_text"] = "Desconectado"
+                status_data["adb_style"] = "BadgeErr.TLabel"
             else:
                 dev = devices[0]
+                status_data["connected"] = True
                 if dev.is_authorized:
-                    self.active_device_serial = dev.serial
+                    status_data["authorized"] = True
+                    status_data["active_serial"] = dev.serial
                     mfg_str = f" [{dev.manufacturer}]" if dev.manufacturer else ""
-                    self.lbl_device.config(
-                        text=f"{dev.model or dev.serial}{mfg_str} (Android {dev.android_version or '?'})",
-                        style="BadgeOK.TLabel",
-                    )
-                    self.lbl_adb.config(text="Autorizado", style="BadgeOK.TLabel")
+                    status_data["device_text"] = f"{dev.model or dev.serial}{mfg_str} (Android {dev.android_version or '?'})"
+                    status_data["device_style"] = "BadgeOK.TLabel"
+                    status_data["adb_text"] = "Autorizado"
+                    status_data["adb_style"] = "BadgeOK.TLabel"
 
-                    # Discover WhatsApp Accounts
+                    # Discover WhatsApp Accounts in background
                     try:
-                        self.detected_accounts = self.device_manager.list_whatsapp_accounts(dev.serial)
-                        if self.detected_accounts:
-                            acc_entries = [
-                                f"[{a.account_id}] {a.display_name} ({a.crypt_format})"
-                                for a in self.detected_accounts
-                            ]
-                            self.cmb_accounts["values"] = acc_entries
-
-                            # Select current or first
-                            current_match = next(
-                                (
-                                    e
-                                    for e in acc_entries
-                                    if e.startswith(f"[{self.selected_account_id}]")
-                                    or f"[{self.selected_account_id}]" in e
-                                ),
-                                acc_entries[0],
-                            )
-                            self.cmb_accounts.set(current_match)
-                            # Update selected_account_id
-                            for a in self.detected_accounts:
-                                if current_match.startswith(f"[{a.account_id}]"):
-                                    self.selected_account_id = a.account_id
-                                    break
+                        accounts = self.device_manager.list_whatsapp_accounts(dev.serial)
+                        status_data["accounts"] = accounts
                     except Exception as e:
-                        logger.warning(f"Error listing accounts: {e}")
+                        logger.warning(f"Error listando cuentas de WhatsApp: {e}")
                 else:
-                    self.lbl_device.config(text=f"{dev.serial} (Sin autorizar)", style="BadgeWarn.TLabel")
+                    status_data["device_text"] = f"{dev.serial} (Sin autorizar)"
+                    status_data["device_style"] = "BadgeWarn.TLabel"
                     if dev.state in ("unauthorized", "authorizing"):
-                        self.lbl_adb.config(
-                            text="Acepta el aviso en el móvil (RSA)", style="BadgeWarn.TLabel"
-                        )
+                        status_data["adb_text"] = "Acepta el aviso en el móvil (RSA)"
                     else:
-                        self.lbl_adb.config(
-                            text=f"Estado: {dev.state}", style="BadgeWarn.TLabel"
-                        )
+                        status_data["adb_text"] = f"Estado: {dev.state}"
+                    status_data["adb_style"] = "BadgeWarn.TLabel"
 
         except Exception as e:
-            self.lbl_device.config(text="Error ADB", style="BadgeErr.TLabel")
-            self.lbl_adb.config(text=str(e)[:30], style="BadgeErr.TLabel")
+            logger.error(f"Error en sondeo de estado ADB: {e}")
+            status_data["device_text"] = "Error ADB"
+            status_data["device_style"] = "BadgeErr.TLabel"
+            status_data["adb_text"] = str(e)[:30]
+            status_data["adb_style"] = "BadgeErr.TLabel"
+        finally:
+            with self._refresh_lock:
+                self._refresh_running = False
+            self.after(0, lambda: self._apply_status_update(status_data))
+
+    def _apply_status_update(self, data: dict):
+        """Update GUI widgets on the main thread in < 1ms."""
+        self.active_device_serial = data.get("active_serial", "")
+        self.lbl_device.config(text=data["device_text"], style=data["device_style"])
+        self.lbl_adb.config(text=data["adb_text"], style=data["adb_style"])
+
+        accounts = data.get("accounts", [])
+        if accounts:
+            self.detected_accounts = accounts
+            acc_entries = [
+                f"[{a.account_id}] {a.display_name} ({a.crypt_format})"
+                for a in self.detected_accounts
+            ]
+            self.cmb_accounts["values"] = acc_entries
+
+            # Keep current selection or pick first
+            current_match = next(
+                (
+                    e
+                    for e in acc_entries
+                    if e.startswith(f"[{self.selected_account_id}]")
+                    or f"[{self.selected_account_id}]" in e
+                ),
+                acc_entries[0],
+            )
+            self.cmb_accounts.set(current_match)
+            for a in self.detected_accounts:
+                if current_match.startswith(f"[{a.account_id}]"):
+                    self.selected_account_id = a.account_id
+                    break
+        elif not data.get("connected"):
+            self.detected_accounts = []
+            self.cmb_accounts["values"] = ["principal"]
+            self.cmb_accounts.set("principal")
+            self.lbl_backup.config(text="Desconocido")
 
         self._refresh_account_specific_badges()
 

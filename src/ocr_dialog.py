@@ -1,6 +1,7 @@
 """Interactive Tkinter Dialog for capturing screen, delimiting ROI, and performing OCR on WhatsApp 64-digit key."""
 
 import logging
+import threading
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
@@ -136,20 +137,36 @@ class CaptureKeyDialog(tk.Toplevel):
         self.btn_save.pack(side=tk.RIGHT, padx=5)
 
     def refresh_screenshot(self):
-        """Capture screenshot from connected phone via ADB."""
+        """Capture screenshot from connected phone via ADB asynchronously."""
+        self.lbl_roi_info.config(text="Capturando pantalla desde el teléfono vía ADB...")
+        threading.Thread(target=self._async_capture_worker, daemon=True).start()
+
+    def _async_capture_worker(self):
         try:
-            self.original_image = self.ocr_manager.capture_screenshot()
-            self._redraw_image_and_roi()
+            img = self.ocr_manager.capture_screenshot()
+            self.after(0, lambda: self._on_screenshot_captured(img))
         except WhatsAppBackupError as e:
-            messagebox.showerror(
-                "Error de Captura",
-                f"{e.message}\n\nAcción recomendada:\n{e.action_recommended}",
-                parent=self,
-            )
+            self.after(0, lambda err=e: self._on_capture_error(err))
         except Exception as e:
-            messagebox.showerror(
-                "Error Inesperado", f"No se pudo capturar la pantalla: {e}", parent=self
+            self.after(
+                0,
+                lambda err=e: messagebox.showerror(
+                    "Error Inesperado", f"No se pudo capturar la pantalla: {err}", parent=self
+                ),
             )
+
+    def _on_screenshot_captured(self, img):
+        self.original_image = img
+        self._redraw_image_and_roi()
+        self.lbl_roi_info.config(text="Pantalla capturada. Delimita el área de la clave con el ratón.")
+
+    def _on_capture_error(self, e: WhatsAppBackupError):
+        self.lbl_roi_info.config(text="Error al capturar pantalla.")
+        messagebox.showerror(
+            "Error de Captura",
+            f"{e.message}\n\nAcción recomendada:\n{e.action_recommended}",
+            parent=self,
+        )
 
     def _on_canvas_resize(self, event):
         if self.original_image:
@@ -256,7 +273,7 @@ class CaptureKeyDialog(tk.Toplevel):
         self._draw_roi_rect()
 
     def perform_ocr(self):
-        """Run OCR on the delimited ROI."""
+        """Run OCR on the delimited ROI asynchronously."""
         if not self.original_image:
             messagebox.showwarning(
                 "Sin Imagen",
@@ -269,36 +286,48 @@ class CaptureKeyDialog(tk.Toplevel):
         if self.var_save_roi.get() and self.current_roi:
             self.ocr_manager.save_roi(self.current_roi)
 
+        self.btn_ocr.config(state=tk.DISABLED)
+        self.lbl_roi_info.config(text="Ejecutando reconocimiento OCR sobre el área delimitada...")
+        threading.Thread(target=self._async_ocr_worker, daemon=True).start()
+
+    def _async_ocr_worker(self):
         try:
             key_hex, _raw_text = self.ocr_manager.extract_key_from_image(
                 self.original_image, self.current_roi
             )
-
-            # Format in groups of 4 for readability: xxxx xxxx xxxx ...
-            formatted_key = " ".join([key_hex[i : i + 4] for i in range(0, 64, 4)])
-
-            self.ent_extracted_key.config(state="normal")
-            self.ent_extracted_key.delete(0, tk.END)
-            self.ent_extracted_key.insert(0, formatted_key)
-            self.ent_extracted_key.config(state="readonly")
-
-            self.btn_save.config(state=tk.NORMAL)
-            self.detected_key_clean = key_hex
-
-            messagebox.showinfo(
-                "Clave Detectada con Éxito",
-                f"Se han extraído correctamente los 64 dígitos hexadecimales de la clave.\n\n"
-                f"Clave:\n{formatted_key}\n\n"
-                f"Pulsa '💾 Guardar Clave' para almacenarla de forma segura.",
-                parent=self,
-            )
-
+            self.after(0, lambda: self._on_ocr_success(key_hex))
         except WhatsAppBackupError as e:
-            messagebox.showerror(
-                "Error de OCR", f"{e.message}\n\n{e.action_recommended}", parent=self
-            )
+            self.after(0, lambda err=e: self._on_ocr_error(err))
         except Exception as e:
-            messagebox.showerror("Error Inesperado", f"Fallo al ejecutar OCR: {e}", parent=self)
+            self.after(
+                0,
+                lambda err=e: messagebox.showerror(
+                    "Error Inesperado", f"Fallo al ejecutar OCR: {err}", parent=self
+                ),
+            )
+        finally:
+            self.after(0, lambda: self.btn_ocr.config(state=tk.NORMAL))
+
+    def _on_ocr_success(self, key_hex: str):
+        formatted_key = " ".join([key_hex[i : i + 4] for i in range(0, 64, 4)])
+        self.ent_extracted_key.config(state="normal")
+        self.ent_extracted_key.delete(0, tk.END)
+        self.ent_extracted_key.insert(0, formatted_key)
+        self.ent_extracted_key.config(state="readonly")
+        self.btn_save.config(state=tk.NORMAL)
+        self.detected_key_clean = key_hex
+        self.lbl_roi_info.config(text="¡Clave extraída y validada correctamente!")
+        messagebox.showinfo(
+            "Clave Detectada con Éxito",
+            f"Se han extraído correctamente los 64 dígitos hexadecimales de la clave.\n\n"
+            f"Clave:\n{formatted_key}\n\n"
+            f"Pulsa '💾 Guardar Clave' para almacenarla de forma segura.",
+            parent=self,
+        )
+
+    def _on_ocr_error(self, e: WhatsAppBackupError):
+        self.lbl_roi_info.config(text="Error de lectura OCR.")
+        messagebox.showerror("Error de OCR", f"{e.message}\n\n{e.action_recommended}", parent=self)
 
     def save_extracted_key(self):
         """Save the extracted valid key into the OS keyring."""

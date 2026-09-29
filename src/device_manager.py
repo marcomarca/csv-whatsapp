@@ -26,6 +26,14 @@ class DeviceManager:
 
     def __init__(self, adb_path: str | None = None):
         self.adb_path = adb_path or AppConfig.get_adb_path()
+        self._device_cache: dict[str, DeviceInfo] = {}
+
+    def clear_cache(self, serial: str | None = None) -> None:
+        """Clear cached device info."""
+        if serial:
+            self._device_cache.pop(serial, None)
+        else:
+            self._device_cache.clear()
 
     def run_adb(self, args: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
         """Execute an ADB command safely with arguments array."""
@@ -78,6 +86,7 @@ class DeviceManager:
             return []
 
         devices: list[DeviceInfo] = []
+        current_serials = set()
         for line in res.stdout.splitlines():
             line = line.strip()
             if not line or line.startswith(("*", "List of devices")):
@@ -85,45 +94,86 @@ class DeviceManager:
             parts = line.split()
             if len(parts) >= 2:
                 serial, state = parts[0], parts[1]
+                current_serials.add(serial)
                 dev = DeviceInfo(serial=serial, state=state)
                 if state == "device":
                     self._populate_device_details(dev)
                 devices.append(dev)
 
+        # Evict disconnected devices from cache
+        stale_serials = [s for s in self._device_cache if s not in current_serials]
+        for s in stale_serials:
+            self._device_cache.pop(s, None)
+
         return devices
 
     def _populate_device_details(self, dev: DeviceInfo) -> None:
         """Fetch model, manufacturer, brand, Android OS version, and WhatsApp packages for an authorized device."""
-        # 1. Model
-        model_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.model"])
-        if model_res.returncode == 0:
-            dev.model = model_res.stdout.strip()
+        cached = self._device_cache.get(dev.serial)
+        if cached and cached.model and cached.manufacturer:
+            dev.model = cached.model
+            dev.manufacturer = cached.manufacturer
+            dev.brand = cached.brand
+            dev.android_version = cached.android_version
+            dev.whatsapp_packages = cached.whatsapp_packages
+            return
 
-        # 2. Manufacturer & Brand
-        mfg_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.manufacturer"])
-        if mfg_res.returncode == 0:
-            dev.manufacturer = mfg_res.stdout.strip()
+        # Single batch shell command for model, manufacturer, brand, android version
+        batch_props_cmd = (
+            "getprop ro.product.model; echo '__SEP__'; "
+            "getprop ro.product.manufacturer; echo '__SEP__'; "
+            "getprop ro.product.brand; echo '__SEP__'; "
+            "getprop ro.build.version.release"
+        )
+        props_res = self.run_adb(["-s", dev.serial, "shell", batch_props_cmd])
+        if props_res.returncode == 0 and "__SEP__" in props_res.stdout:
+            parts = props_res.stdout.split("__SEP__")
+            if len(parts) >= 4:
+                dev.model = parts[0].strip()
+                dev.manufacturer = parts[1].strip()
+                dev.brand = parts[2].strip()
+                dev.android_version = parts[3].strip()
 
-        brand_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.brand"])
-        if brand_res.returncode == 0:
-            dev.brand = brand_res.stdout.strip()
+        # Fallback to individual property queries if batch output didn't contain all fields (e.g. in test mocks)
+        if not dev.model:
+            model_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.model"])
+            if model_res.returncode == 0 and model_res.stdout.strip():
+                dev.model = model_res.stdout.strip()
+        if not dev.manufacturer:
+            mfg_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.manufacturer"])
+            if mfg_res.returncode == 0 and mfg_res.stdout.strip():
+                dev.manufacturer = mfg_res.stdout.strip()
+        if not dev.brand:
+            brand_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.product.brand"])
+            if brand_res.returncode == 0 and brand_res.stdout.strip():
+                dev.brand = brand_res.stdout.strip()
+        if not dev.android_version:
+            ver_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.build.version.release"])
+            if ver_res.returncode == 0 and ver_res.stdout.strip():
+                dev.android_version = ver_res.stdout.strip()
 
-        # 3. Android Version
-        ver_res = self.run_adb(["-s", dev.serial, "shell", "getprop", "ro.build.version.release"])
-        if ver_res.returncode == 0:
-            dev.android_version = ver_res.stdout.strip()
-
-        # 4. WhatsApp packages across known OEM user profiles
+        # WhatsApp packages across known OEM user profiles
         installed = set()
-        for user_id in (0, 95, 96, 150, 999, 10):
-            pkg_res = self.run_adb(
-                ["-s", dev.serial, "shell", f"pm list packages --user {user_id}"]
-            )
-            if pkg_res.returncode == 0:
-                for pkg in AppConfig.REMOTE_WHATSAPP_PACKAGES:
-                    if f"package:{pkg}" in pkg_res.stdout:
-                        installed.add(pkg)
+        pkg_res = self.run_adb(
+            ["-s", dev.serial, "shell", "pm list packages | grep -E 'com.whatsapp' || pm list packages"]
+        )
+        if pkg_res.returncode == 0 and pkg_res.stdout.strip():
+            for pkg in AppConfig.REMOTE_WHATSAPP_PACKAGES:
+                if f"package:{pkg}" in pkg_res.stdout:
+                    installed.add(pkg)
+        if not installed:
+            for user_id in (0, 95, 96, 150, 999, 10):
+                pkg_res2 = self.run_adb(
+                    ["-s", dev.serial, "shell", f"pm list packages --user {user_id}"]
+                )
+                if pkg_res2.returncode == 0:
+                    for pkg in AppConfig.REMOTE_WHATSAPP_PACKAGES:
+                        if f"package:{pkg}" in pkg_res2.stdout:
+                            installed.add(pkg)
         dev.whatsapp_packages = sorted(list(installed))
+
+        # Store in cache
+        self._device_cache[dev.serial] = dev
 
     def get_active_device(self, serial: str | None = None) -> DeviceInfo:
         """Get the target authorized device or raise an appropriate structured error."""
