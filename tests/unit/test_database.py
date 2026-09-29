@@ -212,3 +212,84 @@ def test_vault_multi_device_isolation(tmp_path: Path):
     assert samsung_msgs[0].text == "Samsung device message"
 
 
+def test_vault_legacy_schema_migration(tmp_path: Path):
+    """Test that an existing database without account_id or device_serial is migrated smoothly."""
+    import sqlite3
+
+    db_file = tmp_path / "legacy_vault.db"
+    # Create legacy tables without account_id and device_serial columns
+    conn = sqlite3.connect(db_file)
+    conn.executescript("""
+        CREATE TABLE backups (
+            backup_id TEXT PRIMARY KEY,
+            device_id TEXT,
+            source_path TEXT,
+            filename TEXT,
+            format TEXT,
+            file_size INTEGER,
+            sha256 TEXT UNIQUE,
+            source_modified_at TEXT,
+            imported_at TEXT,
+            decryption_status TEXT,
+            parser_version TEXT,
+            message_count INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            conversation_name TEXT,
+            conversation_type TEXT,
+            original_jid TEXT,
+            last_message_at TEXT,
+            message_count INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE messages (
+            message_uid TEXT PRIMARY KEY,
+            conversation_id TEXT,
+            sender_id TEXT,
+            sender_name TEXT,
+            direction TEXT,
+            timestamp_utc TEXT,
+            timestamp_local TEXT,
+            message_type TEXT,
+            text TEXT,
+            media_path TEXT,
+            media_mime TEXT,
+            media_size INTEGER,
+            media_status TEXT DEFAULT 'not_exported',
+            quoted_message_id TEXT,
+            forwarded INTEGER DEFAULT 0,
+            edited INTEGER DEFAULT 0,
+            starred INTEGER DEFAULT 0,
+            raw_type_code INTEGER,
+            source_backup_id TEXT
+        );
+
+        CREATE TABLE export_runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT,
+            finished_at TEXT,
+            status TEXT,
+            backup_id TEXT,
+            total_conversations INTEGER DEFAULT 0,
+            total_messages INTEGER DEFAULT 0,
+            inserted_messages INTEGER DEFAULT 0,
+            updated_messages INTEGER DEFAULT 0,
+            warnings TEXT,
+            error_code TEXT
+        );
+    """)
+    conn.close()
+
+    # Now instantiate VaultDatabase, which runs init_db() and schema migrations
+    vault = VaultDatabase(db_file)
+
+    # Verify that columns were added and queries with filters work
+    convs = vault.get_all_conversations(account_id="principal")
+    assert convs == []
+    msgs = vault.get_all_messages(account_id="principal", device_serial="")
+    assert msgs == []
+
+
+

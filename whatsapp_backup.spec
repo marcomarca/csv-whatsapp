@@ -4,8 +4,6 @@ import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-block_cipher = None
-
 project_dir = Path.cwd()
 
 # 1. Collect data files from dependencies
@@ -16,11 +14,6 @@ datas += collect_data_files('rapidocr_onnxruntime')
 
 # wa-crypt-tools protobufs and assets
 datas += collect_data_files('wa_crypt_tools')
-
-# Bundled platform-tools (ADB, dlls)
-vendor_pt = project_dir / 'vendor' / 'platform-tools'
-if vendor_pt.exists():
-    datas.append((str(vendor_pt), 'vendor/platform-tools'))
 
 # 2. Collect hidden imports
 hiddenimports = [
@@ -70,17 +63,15 @@ a = Analysis(
     excludes=['pytest', 'ruff', 'pip'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
-    a.zipfiles,
     a.datas,
     [],
     name='whatsapp-backup-csv',
@@ -92,6 +83,7 @@ exe = EXE(
     runtime_tmpdir=None,
     console=True,  # Keeps console available for CLI and status while opening GUI
     disable_windowed_traceback=False,
+    argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,

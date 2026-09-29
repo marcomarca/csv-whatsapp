@@ -93,18 +93,9 @@ class VaultDatabase:
                     warnings TEXT,
                     error_code TEXT
                 );
-
-                CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_acc ON messages(account_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_dev_acc ON messages(device_serial, account_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp_utc);
-                CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
-                CREATE INDEX IF NOT EXISTS idx_conv_acc ON conversations(account_id);
-                CREATE INDEX IF NOT EXISTS idx_conv_dev_acc ON conversations(device_serial, account_id);
-                CREATE INDEX IF NOT EXISTS idx_backups_sha ON backups(sha256);
             """)
 
-            # Schema migration: check if account_id & device_serial columns exist
+            # Schema migration: check if account_id & device_serial columns exist before creating indexes
             for table_name in ("conversations", "messages", "export_runs"):
                 cur = conn.execute(f"PRAGMA table_info({table_name});")
                 cols = [r["name"] for r in cur.fetchall()]
@@ -116,6 +107,18 @@ class VaultDatabase:
                     conn.execute(
                         f"ALTER TABLE {table_name} ADD COLUMN device_serial TEXT DEFAULT '';"
                     )
+
+            # Create indexes after migrations ensure all columns exist
+            conn.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
+                CREATE INDEX IF NOT EXISTS idx_messages_acc ON messages(account_id);
+                CREATE INDEX IF NOT EXISTS idx_messages_dev_acc ON messages(device_serial, account_id);
+                CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp_utc);
+                CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
+                CREATE INDEX IF NOT EXISTS idx_conv_acc ON conversations(account_id);
+                CREATE INDEX IF NOT EXISTS idx_conv_dev_acc ON conversations(device_serial, account_id);
+                CREATE INDEX IF NOT EXISTS idx_backups_sha ON backups(sha256);
+            """)
 
             conn.commit()
 
